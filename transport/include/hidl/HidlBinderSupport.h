@@ -17,16 +17,52 @@
 #ifndef ANDROID_HIDL_BINDER_SUPPORT_H
 #define ANDROID_HIDL_BINDER_SUPPORT_H
 
+#include <android/hidl/base/1.0/IBase.h>
 #include <hidl/HidlSupport.h>
+#include <hidl/HidlTransportUtils.h>
 #include <hidl/MQDescriptor.h>
+#include <hidl/Static.h>
 #include <hwbinder/IBinder.h>
+#include <hwbinder/IPCThreadState.h>
 #include <hwbinder/Parcel.h>
-
+#include <hwbinder/ProcessState.h>
+#include <android/hidl/base/1.0/BnBase.h>
 // Defines functions for hidl_string, hidl_version, Status, hidl_vec, MQDescriptor,
 // etc. to interact with Parcel.
 
 namespace android {
 namespace hardware {
+
+// hidl_binder_death_recipient wraps a transport-independent
+// hidl_death_recipient, and implements the binder-specific
+// DeathRecipient interface.
+struct hidl_binder_death_recipient : IBinder::DeathRecipient {
+    hidl_binder_death_recipient(const sp<hidl_death_recipient> &recipient,
+            uint64_t cookie, const sp<::android::hidl::base::V1_0::IBase> &base) :
+        mRecipient(recipient), mCookie(cookie), mBase(base) {
+    }
+    virtual void binderDied(const wp<IBinder>& /*who*/) {
+        sp<hidl_death_recipient> recipient = mRecipient.promote();
+        if (recipient != nullptr) {
+            recipient->serviceDied(mCookie, mBase);
+        }
+    }
+    wp<hidl_death_recipient> getRecipient() {
+        return mRecipient;
+    }
+private:
+    wp<hidl_death_recipient> mRecipient;
+    uint64_t mCookie;
+    wp<::android::hidl::base::V1_0::IBase> mBase;
+};
+
+// ---------------------- hidl_memory
+
+status_t readEmbeddedFromParcel(hidl_memory *memory,
+        const Parcel &parcel, size_t parentHandle, size_t parentOffset);
+
+status_t writeEmbeddedToParcel(const hidl_memory &memory,
+        Parcel *parcel, size_t parentHandle, size_t parentOffset);
 
 // ---------------------- hidl_string
 
@@ -89,9 +125,9 @@ status_t findInParcel(const hidl_vec<T> &vec, const Parcel &parcel, size_t *hand
 
 // ---------------------- MQDescriptor
 
-template<MQFlavor flavor>
+template<typename T, MQFlavor flavor>
 ::android::status_t readEmbeddedFromParcel(
-        MQDescriptor<flavor> *obj,
+        MQDescriptor<T, flavor> *obj,
         const ::android::hardware::Parcel &parcel,
         size_t parentHandle,
         size_t parentOffset) {
@@ -103,14 +139,14 @@ template<MQFlavor flavor>
                 &obj->grantors(),
                 parcel,
                 parentHandle,
-                parentOffset + MQDescriptor<flavor>::kOffsetOfGrantors,
+                parentOffset + MQDescriptor<T, flavor>::kOffsetOfGrantors,
                 &_hidl_grantors_child);
 
     if (_hidl_err != ::android::OK) { return _hidl_err; }
 
     const native_handle_t *_hidl_mq_handle_ptr = parcel.readEmbeddedNativeHandle(
             parentHandle,
-            parentOffset + MQDescriptor<flavor>::kOffsetOfHandle);
+            parentOffset + MQDescriptor<T, flavor>::kOffsetOfHandle);
 
     if (_hidl_mq_handle_ptr == nullptr) {
         _hidl_err = ::android::UNKNOWN_ERROR;
@@ -120,9 +156,9 @@ template<MQFlavor flavor>
     return _hidl_err;
 }
 
-template<MQFlavor flavor>
+template<typename T, MQFlavor flavor>
 ::android::status_t writeEmbeddedToParcel(
-        const MQDescriptor<flavor> &obj,
+        const MQDescriptor<T, flavor> &obj,
         ::android::hardware::Parcel *parcel,
         size_t parentHandle,
         size_t parentOffset) {
@@ -134,7 +170,7 @@ template<MQFlavor flavor>
             obj.grantors(),
             parcel,
             parentHandle,
-            parentOffset + MQDescriptor<flavor>::kOffsetOfGrantors,
+            parentOffset + MQDescriptor<T, flavor>::kOffsetOfGrantors,
             &_hidl_grantors_child);
 
     if (_hidl_err != ::android::OK) { return _hidl_err; }
@@ -142,7 +178,7 @@ template<MQFlavor flavor>
     _hidl_err = parcel->writeEmbeddedNativeHandle(
             obj.handle(),
             parentHandle,
-            parentOffset + MQDescriptor<flavor>::kOffsetOfHandle);
+            parentOffset + MQDescriptor<T, flavor>::kOffsetOfHandle);
 
     if (_hidl_err != ::android::OK) { return _hidl_err; }
 
@@ -272,30 +308,23 @@ static status_t writeReferenceToParcel(
 
 // ---------------------- support for casting interfaces
 
-extern std::map<std::string, std::function<sp<IBinder>(void*)>> gBnConstructorMap;
-
 // Construct a smallest possible binder from the given interface.
 // If it is remote, then its remote() will be retrieved.
 // Otherwise, the smallest possible BnChild is found where IChild is a subclass of IType
 // and iface is of class IChild. BnChild will be used to wrapped the given iface.
 // Return nullptr if iface is null or any failure.
-template <typename IType, typename IHwType>
+template <typename IType, typename ProxyType>
 sp<IBinder> toBinder(sp<IType> iface) {
     IType *ifacePtr = iface.get();
     if (ifacePtr == nullptr) {
         return nullptr;
     }
     if (ifacePtr->isRemote()) {
-        return ::android::hardware::IInterface::asBinder(static_cast<IHwType *>(ifacePtr));
+        return ::android::hardware::IInterface::asBinder(static_cast<ProxyType *>(ifacePtr));
     } else {
-        std::string myDescriptor{};
-        ifacePtr->interfaceChain([&](const hidl_vec<hidl_string> &types) {
-            if (types.size() > 0) {
-                myDescriptor = types[0].c_str();
-            }
-        });
+        std::string myDescriptor = getDescriptor(ifacePtr);
         if (myDescriptor.empty()) {
-            // interfaceChain fails || types.size() == 0
+            // interfaceChain fails
             return nullptr;
         }
         auto iter = gBnConstructorMap.find(myDescriptor);
@@ -306,85 +335,33 @@ sp<IBinder> toBinder(sp<IType> iface) {
     }
 }
 
-#define IMPLEMENT_SERVICE_MANAGER_INTERACTIONS(INTERFACE, PACKAGE)                       \
-    ::android::sp<I##INTERFACE> I##INTERFACE::getService(                                \
-            const std::string &serviceName, bool getStub)                                \
-    {                                                                                    \
-        using ::android::sp;                                                             \
-        using ::android::hardware::defaultServiceManager;                                \
-        using ::android::hardware::IBinder;                                              \
-        using ::android::hidl::manager::V1_0::IServiceManager;                           \
-        sp<I##INTERFACE> iface;                                                          \
-        const sp<IServiceManager> sm = defaultServiceManager();                          \
-        if (sm != nullptr && !getStub) {                                                 \
-            sp<IBinder> binderIface;                                                     \
-            ::android::hardware::Return<void> ret =                                      \
-                sm->get(PACKAGE "::I" #INTERFACE, serviceName.c_str(),                   \
-                    [&binderIface](sp<IBinder> iface) {                                  \
-                        binderIface = iface;                                             \
-                    });                                                                  \
-            if (ret.getStatus().isOk()) {                                                \
-                iface = IHw##INTERFACE::asInterface(binderIface);                        \
-                if (iface != nullptr) {                                                  \
-                    return iface;                                                        \
-                }                                                                        \
-            }                                                                            \
-        }                                                                                \
-        int dlMode = RTLD_LAZY;                                                          \
-        void *handle = dlopen(HAL_LIBRARY_PATH_ODM PACKAGE "-impl.so", dlMode);          \
-        if (handle == nullptr) {                                                         \
-            handle = dlopen(HAL_LIBRARY_PATH_VENDOR PACKAGE "-impl.so", dlMode);         \
-        }                                                                                \
-        if (handle == nullptr) {                                                         \
-            handle = dlopen(HAL_LIBRARY_PATH_SYSTEM PACKAGE "-impl.so", dlMode);         \
-        }                                                                                \
-        if (handle == nullptr) {                                                         \
-            return iface;                                                                \
-        }                                                                                \
-        I##INTERFACE* (*generator)(const char* name);                                    \
-        *(void **)(&generator) = dlsym(handle, "HIDL_FETCH_I"#INTERFACE);                \
-        if (generator) {                                                                 \
-            iface = (*generator)(serviceName.c_str());                                   \
-            if (iface != nullptr) {                                                      \
-                iface = new Bs##INTERFACE(iface);                                        \
-            }                                                                            \
-        }                                                                                \
-        return iface;                                                                    \
-    }                                                                                    \
-    ::android::status_t I##INTERFACE::registerAsService(                                 \
-            const std::string &serviceName)                                              \
-    {                                                                                    \
-        using ::android::sp;                                                             \
-        using ::android::hardware::defaultServiceManager;                                \
-        using ::android::hidl::manager::V1_0::IServiceManager;                           \
-        sp<Bn##INTERFACE> binderIface = new Bn##INTERFACE(this);                         \
-        const sp<IServiceManager> sm = defaultServiceManager();                          \
-        bool success = false;                                                            \
-        ::android::hardware::Return<void> ret =                                          \
-            this->interfaceChain(                                                        \
-                [&success, &sm, &serviceName, &binderIface](const auto &chain) {         \
-                    success = sm->add(chain, serviceName.c_str(), binderIface);          \
-                });                                                                      \
-        success = success && ret.getStatus().isOk();                                     \
-        return success ? ::android::OK : ::android::UNKNOWN_ERROR;                       \
-    }                                                                                    \
-    bool I##INTERFACE::registerForNotifications(                                         \
-            const std::string &serviceName,                                              \
-            const ::android::sp<::android::hidl::manager::V1_0::IServiceNotification>    \
-                      &notification)                                                     \
-    {                                                                                    \
-        using ::android::sp;                                                             \
-        using ::android::hardware::defaultServiceManager;                                \
-        using ::android::hidl::manager::V1_0::IServiceManager;                           \
-        const sp<IServiceManager> sm = defaultServiceManager();                          \
-        if (sm == nullptr) {                                                             \
-            return false;                                                                \
-        }                                                                                \
-        return sm->registerForNotifications(PACKAGE "::I" #INTERFACE,                    \
-                                            serviceName,                                 \
-                                            notification);                               \
-    }
+template <typename IType, typename ProxyType, typename StubType>
+sp<IType> fromBinder(const sp<IBinder>& binderIface) {
+    using ::android::hidl::base::V1_0::IBase;
+    using ::android::hidl::base::V1_0::BnBase;
 
+    if (binderIface.get() == nullptr) {
+        return nullptr;
+    }
+    if (binderIface->localBinder() == nullptr) {
+        return new ProxyType(binderIface);
+    }
+    sp<IBase> base = static_cast<BnBase*>(binderIface.get())->getImpl();
+    if (canCastInterface(base.get(), IType::descriptor)) {
+        StubType* stub = static_cast<StubType*>(binderIface.get());
+        return stub->getImpl();
+    } else {
+        return nullptr;
+    }
+}
+
+inline void configureBinderRpcThreadpool(size_t maxThreads, bool callerWillJoin) {
+    ProcessState::self()->setThreadPoolConfiguration(maxThreads, callerWillJoin /*callerJoinsPool*/);
+}
+
+inline void joinBinderRpcThreadpool() {
+    IPCThreadState::self()->joinThreadPool();
+}
 
 }  // namespace hardware
 }  // namespace android

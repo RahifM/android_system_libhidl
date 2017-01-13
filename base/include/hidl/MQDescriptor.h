@@ -49,15 +49,16 @@ enum MQFlavor : uint32_t {
   kUnsynchronizedWrite = 0x02
 };
 
-template <MQFlavor flavor>
+template <typename T, MQFlavor flavor>
 struct MQDescriptor {
     MQDescriptor(
             const std::vector<GrantorDescriptor>& grantors,
             native_handle_t* nHandle, size_t size);
 
     MQDescriptor(size_t bufferSize, native_handle_t* nHandle,
-                 size_t messageSize);
+                 size_t messageSize, bool configureEventFlag = false);
 
+    MQDescriptor();
     ~MQDescriptor();
 
     explicit MQDescriptor(const MQDescriptor &other);
@@ -92,39 +93,49 @@ struct MQDescriptor {
 
     static const size_t kOffsetOfGrantors;
     static const size_t kOffsetOfHandle;
+    enum GrantorType : int { READPTRPOS = 0, WRITEPTRPOS, DATAPTRPOS, EVFLAGWORDPOS };
+
     /*
-     * There should atleast be GrantorDescriptors for the read counter, write
-     * counter and data buffer.
+     * There should at least be GrantorDescriptors for the read counter, write
+     * counter and data buffer. A GrantorDescriptor for an EventFlag word is
+     * not required if there is no need for blocking FMQ operations.
      */
-    static constexpr int32_t kMinGrantorCount = 3;
-    enum GrantorType : int { READPTRPOS = 0, WRITEPTRPOS, DATAPTRPOS };
+    static constexpr int32_t kMinGrantorCount = DATAPTRPOS + 1;
+
+    /*
+     * Minimum number of GrantorDescriptors required if EventFlag support is
+     * needed for blocking FMQ operations.
+     */
+    static constexpr int32_t kMinGrantorCountForEvFlagSupport = EVFLAGWORDPOS + 1;
 private:
     ::android::hardware::hidl_vec<GrantorDescriptor> mGrantors;
-    ::native_handle_t *mHandle;
+    ::android::hardware::details::hidl_pointer<native_handle_t> mHandle;
     uint32_t mQuantum;
     uint32_t mFlags;
 };
 
-template<MQFlavor flavor>
-const size_t MQDescriptor<flavor>::kOffsetOfGrantors = offsetof(MQDescriptor<flavor>, mGrantors);
+template<typename T, MQFlavor flavor>
+const size_t MQDescriptor<T, flavor>::kOffsetOfGrantors = offsetof(MQDescriptor, mGrantors);
 
-template<MQFlavor flavor>
-const size_t MQDescriptor<flavor>::kOffsetOfHandle = offsetof(MQDescriptor<flavor>, mHandle);
+template<typename T, MQFlavor flavor>
+const size_t MQDescriptor<T, flavor>::kOffsetOfHandle = offsetof(MQDescriptor, mHandle);
 
 /*
  * MQDescriptorSync will describe the wait-free synchronized
  * flavor of FMQ.
  */
-using MQDescriptorSync = MQDescriptor<kSynchronizedReadWrite>;
+template<typename T>
+using MQDescriptorSync = MQDescriptor<T, kSynchronizedReadWrite>;
 
 /*
  * MQDescriptorUnsync will describe the unsynchronized write
  * flavor of FMQ.
  */
-using MQDescriptorUnsync = MQDescriptor<kUnsynchronizedWrite>;
+template<typename T>
+using MQDescriptorUnsync = MQDescriptor<T, kUnsynchronizedWrite>;
 
-template<MQFlavor flavor>
-MQDescriptor<flavor>::MQDescriptor(
+template<typename T, MQFlavor flavor>
+MQDescriptor<T, flavor>::MQDescriptor(
         const std::vector<GrantorDescriptor>& grantors,
         native_handle_t* nhandle,
         size_t size)
@@ -137,35 +148,42 @@ MQDescriptor<flavor>::MQDescriptor(
     }
 }
 
-template<MQFlavor flavor>
-MQDescriptor<flavor>::MQDescriptor(size_t bufferSize, native_handle_t *nHandle,
-                           size_t messageSize)
+template<typename T, MQFlavor flavor>
+MQDescriptor<T, flavor>::MQDescriptor(size_t bufferSize, native_handle_t *nHandle,
+                                   size_t messageSize, bool configureEventFlag)
     : mHandle(nHandle), mQuantum(messageSize), mFlags(flavor) {
-    mGrantors.resize(kMinGrantorCount);
+    /*
+     * If configureEventFlag is true, allocate an additional spot in mGrantor
+     * for containing the fd and offset for mmapping the EventFlag word.
+     */
+    mGrantors.resize(configureEventFlag? kMinGrantorCountForEvFlagSupport : kMinGrantorCount);
+
+    size_t memSize[] = {
+        sizeof(RingBufferPosition),  /* memory to be allocated for read pointer counter */
+        sizeof(RingBufferPosition),  /* memory to be allocated for write pointer counter */
+        bufferSize,                  /* memory to be allocated for data buffer */
+        sizeof(std::atomic<uint32_t>)/* memory to be allocated for EventFlag word */
+    };
+
     /*
      * Create a default grantor descriptor for read, write pointers and
      * the data buffer. fdIndex parameter is set to 0 by default and
      * the offset for each grantor is contiguous.
      */
-    mGrantors[READPTRPOS] = {
-        0 /* grantor flags */, 0 /* fdIndex */, 0 /* offset */,
-        sizeof(RingBufferPosition) /* extent */
-    };
-
-    mGrantors[WRITEPTRPOS] = {
-        0 /* grantor flags */,
-        0 /* fdIndex */,
-        sizeof(RingBufferPosition) /* offset */,
-        sizeof(RingBufferPosition) /* extent */
-    };
-    mGrantors[DATAPTRPOS] = {
-        0 /* grantor flags */, 0 /* fdIndex */,
-        2 * sizeof(RingBufferPosition) /* offset */, bufferSize /* extent */
-    };
+    for (size_t grantorPos = 0, offset = 0;
+         grantorPos < mGrantors.size();
+         offset += memSize[grantorPos++]) {
+        mGrantors[grantorPos] = {
+            0 /* grantor flags */,
+            0 /* fdIndex */,
+            static_cast<uint32_t>(offset),
+            memSize[grantorPos]
+        };
+    }
 }
 
-template<MQFlavor flavor>
-MQDescriptor<flavor>::MQDescriptor(const MQDescriptor<flavor> &other)
+template<typename T, MQFlavor flavor>
+MQDescriptor<T, flavor>::MQDescriptor(const MQDescriptor<T, flavor> &other)
     : mGrantors(other.mGrantors),
       mHandle(nullptr),
       mQuantum(other.mQuantum),
@@ -175,37 +193,42 @@ MQDescriptor<flavor>::MQDescriptor(const MQDescriptor<flavor> &other)
                 other.mHandle->numFds, other.mHandle->numInts);
 
         for (int i = 0; i < other.mHandle->numFds; ++i) {
-            const_cast<native_handle_t *>(mHandle)->data[i] =
-                dup(other.mHandle->data[i]);
+            mHandle->data[i] = dup(other.mHandle->data[i]);
         }
 
-        memcpy(&const_cast<native_handle_t *>(mHandle)->data[other.mHandle->numFds],
+        memcpy(&mHandle->data[other.mHandle->numFds],
                &other.mHandle->data[other.mHandle->numFds],
                other.mHandle->numInts * sizeof(int));
     }
 }
 
-template<MQFlavor flavor>
-MQDescriptor<flavor>::~MQDescriptor() {
+template<typename T, MQFlavor flavor>
+MQDescriptor<T, flavor>::MQDescriptor() : MQDescriptor(
+        std::vector<android::hardware::GrantorDescriptor>(),
+        nullptr /* nHandle */,
+        0 /* size */) {}
+
+template<typename T, MQFlavor flavor>
+MQDescriptor<T, flavor>::~MQDescriptor() {
     if (mHandle != nullptr) {
-        native_handle_close(const_cast<native_handle_t *>(mHandle));
-        native_handle_delete(const_cast<native_handle_t *>(mHandle));
+        native_handle_close(mHandle);
+        native_handle_delete(mHandle);
     }
 }
 
-template<MQFlavor flavor>
-size_t MQDescriptor<flavor>::getSize() const {
+template<typename T, MQFlavor flavor>
+size_t MQDescriptor<T, flavor>::getSize() const {
   return mGrantors[DATAPTRPOS].extent;
 }
 
-template<MQFlavor flavor>
-size_t MQDescriptor<flavor>::getQuantum() const { return mQuantum; }
+template<typename T, MQFlavor flavor>
+size_t MQDescriptor<T, flavor>::getQuantum() const { return mQuantum; }
 
-template<MQFlavor flavor>
-int32_t MQDescriptor<flavor>::getFlags() const { return mFlags; }
+template<typename T, MQFlavor flavor>
+int32_t MQDescriptor<T, flavor>::getFlags() const { return mFlags; }
 
-template<MQFlavor flavor>
-std::vector<GrantorDescriptor> MQDescriptor<flavor>::getGrantors() const {
+template<typename T, MQFlavor flavor>
+std::vector<GrantorDescriptor> MQDescriptor<T, flavor>::getGrantors() const {
   size_t grantor_count = mGrantors.size();
   std::vector<GrantorDescriptor> grantors(grantor_count);
   for (size_t i = 0; i < grantor_count; i++) {
@@ -214,8 +237,8 @@ std::vector<GrantorDescriptor> MQDescriptor<flavor>::getGrantors() const {
   return grantors;
 }
 
-template<MQFlavor flavor>
-const sp<NativeHandle> MQDescriptor<flavor>::getNativeHandle() const {
+template<typename T, MQFlavor flavor>
+const sp<NativeHandle> MQDescriptor<T, flavor>::getNativeHandle() const {
   /*
    * Create an sp<NativeHandle> from mHandle.
    */

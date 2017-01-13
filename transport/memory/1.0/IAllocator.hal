@@ -14,22 +14,19 @@
  * limitations under the License.
  */
 
-// All static variables go here, to control initialization and
-// destruction order in the library.
+package android.hidl.memory@1.0;
 
-#include <hidl/Static.h>
+/**
+ * Interface which allocates the required memory.
+ */
+interface IAllocator {
 
-namespace android {
-namespace hardware {
-
-Mutex gDefaultServiceManagerLock;
-sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
-
-std::map<std::string, std::function<sp<IBinder>(void *)>>
-        gBnConstructorMap{};
-
-std::map<std::string, std::function<sp<::android::hidl::base::V1_0::IBase>(void *)>>
-        gBsConstructorMap;
-
-}   // namespace hardware
-}   // namespace android
+    /**
+     * Return memory must have instance name corresponding to this type of memory.
+     *
+     * @param size Size of memory to allocate in bytes.
+     * @return success Whether allocation succeeded.
+     * @return memory Unmapped memory object.
+     */
+    allocate(uint64_t size) generates (bool success, memory mem);
+};

@@ -14,22 +14,24 @@
  * limitations under the License.
  */
 
-// All static variables go here, to control initialization and
-// destruction order in the library.
+#ifndef HIDL_FETCH_H
+#define HIDL_FETCH_H
 
-#include <hidl/Static.h>
+#include <android/hidl/memory/1.0/IAllocator.h>
+#include <android/hidl/memory/1.0/IMapper.h>
 
 namespace android {
-namespace hardware {
+namespace hidl {
+namespace memory {
+namespace V1_0 {
+namespace implementation {
 
-Mutex gDefaultServiceManagerLock;
-sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
+extern "C" IMapper* HIDL_FETCH_IMapper(const char* name);
 
-std::map<std::string, std::function<sp<IBinder>(void *)>>
-        gBnConstructorMap{};
+}  // namespace implementation
+}  // namespace V1_0
+}  // namespace memory
+}  // namespace hidl
+}  // namespace android
 
-std::map<std::string, std::function<sp<::android::hidl::base::V1_0::IBase>(void *)>>
-        gBsConstructorMap;
-
-}   // namespace hardware
-}   // namespace android
+#endif  // HIDL_FETCH_H

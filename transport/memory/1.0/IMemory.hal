@@ -14,22 +14,31 @@
  * limitations under the License.
  */
 
-// All static variables go here, to control initialization and
-// destruction order in the library.
+package android.hidl.memory@1.0;
 
-#include <hidl/Static.h>
+interface IMemory {
 
-namespace android {
-namespace hardware {
+    /**
+     * Notify that you are about to use this memory.
+     */
+    update();
 
-Mutex gDefaultServiceManagerLock;
-sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
+    /**
+     * Notify that you are done modifying this memory.
+     */
+    commit();
 
-std::map<std::string, std::function<sp<IBinder>(void *)>>
-        gBnConstructorMap{};
+    /**
+     * Must return the same value everytime it is called. Must be callable
+     * at any point in or outside of the update/commit process.
+     *
+     * @return ptr Actual pointer to underlying memory.
+     */
+    getPointer() generates (pointer ptr);
 
-std::map<std::string, std::function<sp<::android::hidl::base::V1_0::IBase>(void *)>>
-        gBsConstructorMap;
+    /**
+     * @return size Size in bytes of underlying memory.
+     */
+    getSize() generates (uint64_t size);
 
-}   // namespace hardware
-}   // namespace android
+};

@@ -13,8 +13,9 @@
 // limitations under the License.
 
 subdirs = [
-    "base",         // libhidlbase
-    "transport",    // libhidl
+    "base",           // libhidlbase
+    "libhidlmemory",  // libhidlmemory
+    "transport",      // libhidltransport
 ]
 
 cc_test {
@@ -29,6 +30,7 @@ cc_test {
         "libhwbinder",
         "liblog",
         "libutils",
+        "libcutils",
     ],
     static_libs: ["libgtest"],
 

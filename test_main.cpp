@@ -23,12 +23,23 @@
 #include <vector>
 
 #define EXPECT_ARRAYEQ(__a1__, __a2__, __size__) EXPECT_TRUE(isArrayEqual(__a1__, __a2__, __size__))
+#define EXPECT_2DARRAYEQ(__a1__, __a2__, __size1__, __size2__) \
+        EXPECT_TRUE(is2dArrayEqual(__a1__, __a2__, __size1__, __size2__))
 
 template<typename T, typename S>
 static inline bool isArrayEqual(const T arr1, const S arr2, size_t size) {
     for(size_t i = 0; i < size; i++)
         if(arr1[i] != arr2[i])
             return false;
+    return true;
+}
+
+template<typename T, typename S>
+static inline bool is2dArrayEqual(const T arr1, const S arr2, size_t size1, size_t size2) {
+    for(size_t i = 0; i < size1; i++)
+        for (size_t j = 0; j < size2; j++)
+            if(arr1[i][j] != arr2[i][j])
+                return false;
     return true;
 }
 
@@ -99,7 +110,31 @@ TEST_F(LibHidlTest, StringTest) {
     EXPECT_FALSE(hs1 == stringNE);
 }
 
-TEST_F(LibHidlTest, VecTest) {
+TEST_F(LibHidlTest, MemoryTest) {
+    using android::hardware::hidl_memory;
+
+    hidl_memory mem1 = hidl_memory(); // default constructor
+    hidl_memory mem2 = mem1; // copy constructor (nullptr)
+
+    EXPECT_EQ(nullptr, mem2.handle());
+
+    native_handle_t* testHandle = native_handle_create(0 /* numInts */, 0 /* numFds */);
+
+    hidl_memory mem3 = hidl_memory("foo", testHandle, 42 /* size */); // owns testHandle
+    hidl_memory mem4 = mem3; // copy constructor (regular handle)
+
+    EXPECT_EQ(mem3.name(), mem4.name());
+    EXPECT_EQ(mem3.size(), mem4.size());
+    EXPECT_NE(nullptr, mem4.handle());
+    EXPECT_NE(mem3.handle(), mem4.handle()); // check handle cloned
+
+    hidl_memory mem5 = hidl_memory("foo", nullptr, 0); // hidl memory works with nullptr handle
+    hidl_memory mem6 = mem5;
+    EXPECT_EQ(nullptr, mem5.handle());
+    EXPECT_EQ(nullptr, mem6.handle());
+}
+
+TEST_F(LibHidlTest, VecInitTest) {
     using android::hardware::hidl_vec;
     using std::vector;
     int32_t array[] = {5, 6, 7};
@@ -117,19 +152,75 @@ TEST_F(LibHidlTest, VecTest) {
     hidl_vec<int32_t> v3 = {5, 6, 7}; // initializer_list
     EXPECT_EQ(v3.size(), 3ul);
     EXPECT_ARRAYEQ(v3, array, v3.size());
+}
+
+TEST_F(LibHidlTest, VecIterTest) {
+    int32_t array[] = {5, 6, 7};
+    android::hardware::hidl_vec<int32_t> hv1 = std::vector<int32_t>(array, array + 3);
 
     auto iter = hv1.begin();    // iterator begin()
-    EXPECT_EQ(*iter, 5);
-    iter++;                     // post increment
+    EXPECT_EQ(*iter++, 5);
     EXPECT_EQ(*iter, 6);
-    ++iter;                     // pre increment
+    EXPECT_EQ(*++iter, 7);
+    EXPECT_EQ(*iter--, 7);
+    EXPECT_EQ(*iter, 6);
+    EXPECT_EQ(*--iter, 5);
+
+    iter += 2;
     EXPECT_EQ(*iter, 7);
+    iter -= 2;
+    EXPECT_EQ(*iter, 5);
+
+    iter++;
+    EXPECT_EQ(*(iter + 1), 7);
+    EXPECT_EQ(*(1 + iter), 7);
+    EXPECT_EQ(*(iter - 1), 5);
+    EXPECT_EQ(*iter, 6);
+
+    auto five = iter - 1;
+    auto seven = iter + 1;
+    EXPECT_EQ(seven - five, 2);
+    EXPECT_EQ(five - seven, -2);
+
+    EXPECT_LT(five, seven);
+    EXPECT_LE(five, seven);
+    EXPECT_GT(seven, five);
+    EXPECT_GE(seven, five);
+
+    EXPECT_EQ(seven[0], 7);
+    EXPECT_EQ(five[1], 6);
+}
+
+TEST_F(LibHidlTest, VecIterForTest) {
+    using android::hardware::hidl_vec;
+    int32_t array[] = {5, 6, 7};
+    hidl_vec<int32_t> hv1 = std::vector<int32_t>(array, array + 3);
 
     int32_t sum = 0;            // range based for loop interoperability
     for (auto &&i: hv1) {
         sum += i;
     }
     EXPECT_EQ(sum, 5+6+7);
+
+    for (auto iter = hv1.begin(); iter < hv1.end(); ++iter) {
+        *iter += 10;
+    }
+    const hidl_vec<int32_t> &v4 = hv1;
+    sum = 0;
+    for (const auto &i : v4) {
+        sum += i;
+    }
+    EXPECT_EQ(sum, 15+16+17);
+}
+
+TEST_F(LibHidlTest, VecEqTest) {
+    android::hardware::hidl_vec<int32_t> hv1{5, 6, 7};
+    android::hardware::hidl_vec<int32_t> hv2{5, 6, 7};
+    android::hardware::hidl_vec<int32_t> hv3{5, 6, 8};
+
+    // use the == and != operator intentionally here
+    EXPECT_TRUE(hv1 == hv2);
+    EXPECT_TRUE(hv1 != hv3);
 }
 
 TEST_F(LibHidlTest, ArrayTest) {
@@ -174,6 +265,54 @@ TEST_F(LibHidlTest, VecCopyTest) {
     android::hardware::hidl_vec<int32_t> v;
     great(v);
 }
+
+TEST_F(LibHidlTest, StdArrayTest) {
+    using android::hardware::hidl_array;
+    hidl_array<int32_t, 5> array{(int32_t[5]){1, 2, 3, 4, 5}};
+    std::array<int32_t, 5> stdArray = array;
+    EXPECT_ARRAYEQ(array.data(), stdArray.data(), 5);
+    hidl_array<int32_t, 5> array2 = stdArray;
+    EXPECT_ARRAYEQ(array.data(), array2.data(), 5);
+}
+
+TEST_F(LibHidlTest, MultiDimStdArrayTest) {
+    using android::hardware::hidl_array;
+    hidl_array<int32_t, 2, 3> array;
+    for (size_t i = 0; i < 2; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            array[i][j] = i + j + i * j;
+        }
+    }
+    std::array<std::array<int32_t, 3>, 2> stdArray = array;
+    EXPECT_2DARRAYEQ(array, stdArray, 2, 3);
+    hidl_array<int32_t, 2, 3> array2 = stdArray;
+    EXPECT_2DARRAYEQ(array, array2, 2, 3);
+}
+
+TEST_F(LibHidlTest, HidlVersionTest) {
+    using android::hardware::hidl_version;
+    hidl_version v1_0{1, 0};
+    EXPECT_EQ(1, v1_0.get_major());
+    EXPECT_EQ(0, v1_0.get_minor());
+    hidl_version v2_0{2, 0};
+    hidl_version v2_1{2, 1};
+    hidl_version v2_2{2, 2};
+    hidl_version v3_0{3, 0};
+    hidl_version v3_0b{3,0};
+
+    EXPECT_TRUE(v1_0 < v2_0);
+    EXPECT_TRUE(v2_0 < v2_1);
+    EXPECT_TRUE(v2_1 < v3_0);
+    EXPECT_TRUE(v2_0 > v1_0);
+    EXPECT_TRUE(v2_1 > v2_0);
+    EXPECT_TRUE(v3_0 > v2_1);
+    EXPECT_TRUE(v3_0 == v3_0b);
+    EXPECT_TRUE(v3_0 <= v3_0b);
+    EXPECT_TRUE(v2_2 <= v3_0);
+    EXPECT_TRUE(v3_0 >= v3_0b);
+    EXPECT_TRUE(v3_0 >= v2_2);
+}
+
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);

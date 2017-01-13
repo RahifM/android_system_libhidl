@@ -13,23 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// All static variables go here, to control initialization and
-// destruction order in the library.
-
-#include <hidl/Static.h>
+#include <android/hidl/memory/1.0/IMemory.h>
+#include <hidl/HidlSupport.h>
 
 namespace android {
 namespace hardware {
 
-Mutex gDefaultServiceManagerLock;
-sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
+sp<android::hidl::memory::V1_0::IMemory> mapMemory(const hidl_memory &memory);
 
-std::map<std::string, std::function<sp<IBinder>(void *)>>
-        gBnConstructorMap{};
-
-std::map<std::string, std::function<sp<::android::hidl::base::V1_0::IBase>(void *)>>
-        gBsConstructorMap;
-
-}   // namespace hardware
-}   // namespace android
+}  // namespace hardware
+}  // namespace android

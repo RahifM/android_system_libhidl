@@ -12,50 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-subdirs = [
-    "base/1.0",
-    "manager/1.0",
-    "memory/1.0",
-    "memory/1.0/default",
-    "token/1.0",
-]
-
 cc_library_shared {
-    name: "libhidltransport",
+    name: "libhidlmemory",
     shared_libs: [
         "libbase",
         "liblog",
         "libutils",
-        "libhidlbase",
-        "libhwbinder",
         "libcutils",
-    ],
-    export_shared_lib_headers: [
-        "libbase",
-        "libutils",
         "libhidlbase",
+        "libhidltransport",
+        "android.hidl.memory@1.0"
     ],
-
+    local_include_dirs: ["include"],
     export_include_dirs: ["include"],
 
-    generated_sources: [
-        "android.hidl.manager@1.0_genc++",
-        "android.hidl.base@1.0_genc++"
-    ],
-    generated_headers: [
-        "android.hidl.manager@1.0_genc++_headers",
-        "android.hidl.base@1.0_genc++_headers"
-    ],
-    export_generated_headers: [
-        "android.hidl.manager@1.0_genc++_headers",
-        "android.hidl.base@1.0_genc++_headers"
+    export_shared_lib_headers: [
+        "android.hidl.memory@1.0",
+        "libhidlbase"
     ],
 
     srcs: [
-        "HidlBinderSupport.cpp",
-        "HidlPassthroughSupport.cpp",
-        "ServiceManagement.cpp",
-        "Static.cpp"
+        "mapping.cpp"
     ],
 
     product_variables: {

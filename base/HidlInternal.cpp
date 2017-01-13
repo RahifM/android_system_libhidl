@@ -14,22 +14,20 @@
  * limitations under the License.
  */
 
-// All static variables go here, to control initialization and
-// destruction order in the library.
+#define LOG_TAG "HidlInternal"
 
-#include <hidl/Static.h>
+#include <hidl/HidlInternal.h>
+
+#include <android-base/logging.h>
 
 namespace android {
 namespace hardware {
+namespace details {
 
-Mutex gDefaultServiceManagerLock;
-sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
+void hidl_log_base::logAlwaysFatal(const char *message) const {
+    LOG(FATAL) << message;
+}
 
-std::map<std::string, std::function<sp<IBinder>(void *)>>
-        gBnConstructorMap{};
-
-std::map<std::string, std::function<sp<::android::hidl::base::V1_0::IBase>(void *)>>
-        gBsConstructorMap;
-
-}   // namespace hardware
-}   // namespace android
+}  // namespace details
+}  // namespace hardware
+}  // namespace android

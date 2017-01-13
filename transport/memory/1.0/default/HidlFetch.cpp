@@ -14,22 +14,29 @@
  * limitations under the License.
  */
 
-// All static variables go here, to control initialization and
-// destruction order in the library.
+#include "HidlFetch.h"
 
-#include <hidl/Static.h>
+#include "AshmemAllocator.h"
+#include "AshmemMapper.h"
+
+static std::string kAshmemMemoryName = "ashmem";
 
 namespace android {
-namespace hardware {
+namespace hidl {
+namespace memory {
+namespace V1_0 {
+namespace implementation {
 
-Mutex gDefaultServiceManagerLock;
-sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
+IMapper* HIDL_FETCH_IMapper(const char* name) {
+    if (name == kAshmemMemoryName) {
+        return new AshmemMapper;
+    }
 
-std::map<std::string, std::function<sp<IBinder>(void *)>>
-        gBnConstructorMap{};
+    return nullptr;
+}
 
-std::map<std::string, std::function<sp<::android::hidl::base::V1_0::IBase>(void *)>>
-        gBsConstructorMap;
-
-}   // namespace hardware
-}   // namespace android
+}  // namespace implementation
+}  // namespace V1_0
+}  // namespace memory
+}  // namespace hidl
+}  // namespace android

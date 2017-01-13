@@ -18,94 +18,52 @@
 #define ANDROID_HIDL_SUPPORT_H
 
 #include <algorithm>
+#include <array>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <iterator>
 #include <cutils/native_handle.h>
 #include <cutils/properties.h>
 #include <functional>
+#include <hidl/HidlInternal.h>
 #include <hidl/Status.h>
 #include <map>
+#include <stddef.h>
 #include <tuple>
+#include <type_traits>
 #include <utils/Errors.h>
 #include <utils/RefBase.h>
 #include <utils/StrongPointer.h>
 #include <vector>
 
 namespace android {
+
+// this file is included by all hidl interface, so we must forward declare the
+// IMemory and IBase types.
+namespace hidl {
+namespace memory {
+namespace V1_0 {
+    struct IMemory;
+}; // namespace V1_0
+}; // namespace manager
+}; // namespace hidl
+
+namespace hidl {
+namespace base {
+namespace V1_0 {
+    struct IBase;
+}; // namespace V1_0
+}; // namespace base
+}; // namespace hidl
+
 namespace hardware {
 
-namespace details {
-
-// hidl_log_base is a base class that templatized
-// classes implemented in a header can inherit from,
-// to avoid creating dependencies on liblog.
-struct hidl_log_base {
-    void logAlwaysFatal(const char *message);
+// hidl_death_recipient is a callback interfaced that can be used with
+// linkToDeath() / unlinkToDeath()
+struct hidl_death_recipient : public virtual RefBase {
+    virtual void serviceDied(uint64_t cookie,
+            const ::android::wp<::android::hidl::base::V1_0::IBase>& who) = 0;
 };
-
-// HIDL client/server code should *NOT* use this class.
-//
-// hidl_pointer wraps a pointer without taking ownership,
-// and stores it in a union with a uint64_t. This ensures
-// that we always have enough space to store a pointer,
-// regardless of whether we're running in a 32-bit or 64-bit
-// process.
-template<typename T>
-struct hidl_pointer {
-    hidl_pointer()
-        : mPointer(nullptr) {
-    }
-    hidl_pointer(T* ptr)
-        : mPointer(ptr) {
-    }
-    hidl_pointer(const hidl_pointer<T>& other) {
-        mPointer = other.mPointer;
-    }
-    hidl_pointer(hidl_pointer<T>&& other) {
-        *this = std::move(other);
-    }
-
-    hidl_pointer &operator=(const hidl_pointer<T>& other) {
-        mPointer = other.mPointer;
-        return *this;
-    }
-    hidl_pointer &operator=(hidl_pointer<T>&& other) {
-        mPointer = other.mPointer;
-        other.mPointer = nullptr;
-        return *this;
-    }
-    hidl_pointer &operator=(T* ptr) {
-        mPointer = ptr;
-        return *this;
-    }
-
-    operator T*() const {
-        return mPointer;
-    }
-    explicit operator void*() const { // requires explicit cast to avoid ambiguity
-        return mPointer;
-    }
-    T& operator*() const {
-        return *mPointer;
-    }
-    T* operator->() const {
-        return mPointer;
-    }
-    T &operator[](size_t index) {
-        return mPointer[index];
-    }
-    const T &operator[](size_t index) const {
-        return mPointer[index];
-    }
-private:
-    union {
-        T* mPointer;
-        uint64_t _pad;
-    };
-};
-} // namespace details
-
 
 // hidl_handle wraps a pointer to a native_handle_t in a hidl_pointer,
 // so that it can safely be transferred between 32-bit and 64-bit processes.
@@ -240,6 +198,87 @@ inline bool operator!=(const char *s, const hidl_string &hs) {
     return !(s == hs);
 }
 
+// hidl_memory is a structure that can be used to transfer
+// pieces of shared memory between processes. The assumption
+// of this object is that the memory remains accessible as
+// long as the file descriptors in the enclosed mHandle
+// - as well as all of its cross-process dups() - remain opened.
+struct hidl_memory {
+
+    hidl_memory() : mOwnsHandle(false), mHandle(nullptr), mSize(0), mName("") {
+    }
+
+    /**
+     * Creates a hidl_memory object and takes ownership of the handle.
+     */
+    hidl_memory(const hidl_string &name, const hidl_handle &handle, size_t size)
+       : mOwnsHandle(true),
+         mHandle(handle),
+         mSize(size),
+         mName(name)
+    {}
+
+    // copy constructor
+    hidl_memory(const hidl_memory& other) {
+        *this = other;
+    }
+
+    // copy assignment
+    hidl_memory &operator=(const hidl_memory &other) {
+        if (this != &other) {
+            cleanup();
+
+            if (other.mHandle == nullptr) {
+                mHandle = nullptr;
+                mOwnsHandle = false;
+            } else {
+                mOwnsHandle = true;
+                mHandle = native_handle_clone(other.mHandle);
+            }
+            mSize = other.mSize;
+            mName = other.mName;
+        }
+
+        return *this;
+    }
+
+    // TODO move constructor/move assignment
+
+    ~hidl_memory() {
+        cleanup();
+    }
+
+    const native_handle_t* handle() const {
+        return mHandle;
+    }
+
+    const hidl_string &name() const {
+        return mName;
+    }
+
+    size_t size() const {
+        return mSize;
+    }
+
+    // offsetof(hidl_memory, mHandle) exposed since mHandle is private.
+    static const size_t kOffsetOfHandle;
+    // offsetof(hidl_memory, mName) exposed since mHandle is private.
+    static const size_t kOffsetOfName;
+
+private:
+    bool mOwnsHandle;
+    hidl_handle mHandle;
+    size_t mSize;
+    hidl_string mName;
+
+    void cleanup() {
+        // TODO(b/33812533): native_handle_delete
+        if (mOwnsHandle && mHandle != nullptr) {
+            native_handle_close(mHandle);
+        }
+    }
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 
 template<typename T>
@@ -260,8 +299,11 @@ struct hidl_vec : private details::hidl_log_base {
     }
 
     hidl_vec(const std::initializer_list<T> list)
-            : mSize(list.size()),
-              mOwnsBuffer(true) {
+            : mOwnsBuffer(true) {
+        if (list.size() > UINT32_MAX) {
+            logAlwaysFatal("hidl_vec can't hold more than 2^32 elements.");
+        }
+        mSize = static_cast<uint32_t>(list.size());
         mBuffer = new T[mSize];
 
         size_t idx = 0;
@@ -352,6 +394,24 @@ struct hidl_vec : private details::hidl_log_base {
         return v;
     }
 
+    // equality check, assuming that T::operator== is defined.
+    bool operator==(const hidl_vec &other) const {
+        if (mSize != other.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < mSize; ++i) {
+            if (!(mBuffer[i] == other.mBuffer[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // inequality check, assuming that T::operator== is defined.
+    inline bool operator!=(const hidl_vec &other) const {
+        return !((*this) == other);
+    }
+
     size_t size() const {
         return mSize;
     }
@@ -386,25 +446,52 @@ struct hidl_vec : private details::hidl_log_base {
     // offsetof(hidl_string, mBuffer) exposed since mBuffer is private.
     static const size_t kOffsetOfBuffer;
 
+private:
     // Define std interator interface for walking the array contents
-    // TODO:  it might be nice to implement a full featured random access iterator...
-    class iterator : public std::iterator<std::bidirectional_iterator_tag, T>
+    template<bool is_const>
+    class iter : public std::iterator<
+            std::random_access_iterator_tag, /* Category */
+            T,
+            ptrdiff_t, /* Distance */
+            typename std::conditional<is_const, const T *, T *>::type /* Pointer */,
+            typename std::conditional<is_const, const T &, T &>::type /* Reference */>
     {
+        using traits = std::iterator_traits<iter>;
+        using ptr_type = typename traits::pointer;
+        using ref_type = typename traits::reference;
+        using diff_type = typename traits::difference_type;
     public:
-        iterator(T* ptr) : mPtr(ptr) { }
-        iterator operator++()    { iterator i = *this; mPtr++; return i; }
-        iterator operator++(int) { mPtr++; return *this; }
-        iterator operator--()    { iterator i = *this; mPtr--; return i; }
-        iterator operator--(int) { mPtr--; return *this; }
-        T& operator*()  { return *mPtr; }
-        T* operator->() { return mPtr; }
-        bool operator==(const iterator& rhs) const { return mPtr == rhs.mPtr; }
-        bool operator!=(const iterator& rhs) const { return mPtr != rhs.mPtr; }
+        iter(ptr_type ptr) : mPtr(ptr) { }
+        inline iter &operator++()    { mPtr++; return *this; }
+        inline iter  operator++(int) { iter i = *this; mPtr++; return i; }
+        inline iter &operator--()    { mPtr--; return *this; }
+        inline iter  operator--(int) { iter i = *this; mPtr--; return i; }
+        inline friend iter operator+(diff_type n, const iter &it) { return it.mPtr + n; }
+        inline iter  operator+(diff_type n) const { return mPtr + n; }
+        inline iter  operator-(diff_type n) const { return mPtr - n; }
+        inline diff_type operator-(const iter &other) const { return mPtr - other.mPtr; }
+        inline iter &operator+=(diff_type n) { mPtr += n; return *this; }
+        inline iter &operator-=(diff_type n) { mPtr -= n; return *this; }
+        inline ref_type operator*() const  { return *mPtr; }
+        inline ptr_type operator->() const { return mPtr; }
+        inline bool operator==(const iter &rhs) const { return mPtr == rhs.mPtr; }
+        inline bool operator!=(const iter &rhs) const { return mPtr != rhs.mPtr; }
+        inline bool operator< (const iter &rhs) const { return mPtr <  rhs.mPtr; }
+        inline bool operator> (const iter &rhs) const { return mPtr >  rhs.mPtr; }
+        inline bool operator<=(const iter &rhs) const { return mPtr <= rhs.mPtr; }
+        inline bool operator>=(const iter &rhs) const { return mPtr >= rhs.mPtr; }
+        inline ref_type operator[](size_t n) const { return mPtr[n]; }
     private:
-        T* mPtr;
+        ptr_type mPtr;
     };
+public:
+    using iterator       = iter<false /* is_const */>;
+    using const_iterator = iter<true  /* is_const */>;
+
     iterator begin() { return data(); }
     iterator end() { return data()+mSize; }
+    const_iterator begin() const { return data(); }
+    const_iterator end() const { return data()+mSize; }
 
 private:
     details::hidl_pointer<T> mBuffer;
@@ -414,7 +501,7 @@ private:
     // copy from an array-like object, assuming my resources are freed.
     template <typename Array>
     void copyFrom(const Array &data, size_t size) {
-        mSize = size;
+        mSize = static_cast<uint32_t>(size);
         mOwnsBuffer = true;
         if (mSize > 0) {
             mBuffer = new T[size];
@@ -445,7 +532,20 @@ namespace details {
     };
 
     template<typename T, size_t SIZE1, size_t... SIZES>
+    struct std_array {
+        using type = std::array<typename std_array<T, SIZES...>::type, SIZE1>;
+    };
+
+    template<typename T, size_t SIZE1>
+    struct std_array<T, SIZE1> {
+        using type = std::array<T, SIZE1>;
+    };
+
+    template<typename T, size_t SIZE1, size_t... SIZES>
     struct accessor {
+
+        using std_array_type = typename std_array<T, SIZE1, SIZES...>::type;
+
         explicit accessor(T *base)
             : mBase(base) {
         }
@@ -455,12 +555,22 @@ namespace details {
                     &mBase[index * product<SIZES...>::value]);
         }
 
+        accessor &operator=(const std_array_type &other) {
+            for (size_t i = 0; i < SIZE1; ++i) {
+                (*this)[i] = other[i];
+            }
+            return *this;
+        }
+
     private:
         T *mBase;
     };
 
     template<typename T, size_t SIZE1>
     struct accessor<T, SIZE1> {
+
+        using std_array_type = typename std_array<T, SIZE1>::type;
+
         explicit accessor(T *base)
             : mBase(base) {
         }
@@ -469,12 +579,22 @@ namespace details {
             return mBase[index];
         }
 
+        accessor &operator=(const std_array_type &other) {
+            for (size_t i = 0; i < SIZE1; ++i) {
+                (*this)[i] = other[i];
+            }
+            return *this;
+        }
+
     private:
         T *mBase;
     };
 
     template<typename T, size_t SIZE1, size_t... SIZES>
     struct const_accessor {
+
+        using std_array_type = typename std_array<T, SIZE1, SIZES...>::type;
+
         explicit const_accessor(const T *base)
             : mBase(base) {
         }
@@ -484,18 +604,37 @@ namespace details {
                     &mBase[index * product<SIZES...>::value]);
         }
 
+        operator std_array_type() {
+            std_array_type array;
+            for (size_t i = 0; i < SIZE1; ++i) {
+                array[i] = (*this)[i];
+            }
+            return array;
+        }
+
     private:
         const T *mBase;
     };
 
     template<typename T, size_t SIZE1>
     struct const_accessor<T, SIZE1> {
+
+        using std_array_type = typename std_array<T, SIZE1>::type;
+
         explicit const_accessor(const T *base)
             : mBase(base) {
         }
 
         const T &operator[](size_t index) const {
             return mBase[index];
+        }
+
+        operator std_array_type() {
+            std_array_type array;
+            for (size_t i = 0; i < SIZE1; ++i) {
+                array[i] = (*this)[i];
+            }
+            return array;
         }
 
     private:
@@ -506,9 +645,26 @@ namespace details {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// A multidimensional array of T's. Assumes that T::operator=(const T &) is defined.
 template<typename T, size_t SIZE1, size_t... SIZES>
 struct hidl_array {
+
+    using std_array_type = typename details::std_array<T, SIZE1, SIZES...>::type;
+
     hidl_array() = default;
+
+    // Copies the data from source, using T::operator=(const T &).
+    hidl_array(const T *source) {
+        for (size_t i = 0; i < elementCount(); ++i) {
+            mBuffer[i] = source[i];
+        }
+    }
+
+    // Copies the data from the given std::array, using T::operator=(const T &).
+    hidl_array(const std_array_type &array) {
+        details::accessor<T, SIZE1, SIZES...> modifier(mBuffer);
+        modifier = array;
+    }
 
     T *data() { return mBuffer; }
     const T *data() const { return mBuffer; }
@@ -523,22 +679,55 @@ struct hidl_array {
                 &mBuffer[index * details::product<SIZES...>::value]);
     }
 
+    // equality check, assuming that T::operator== is defined.
+    bool operator==(const hidl_array &other) const {
+        for (size_t i = 0; i < elementCount(); ++i) {
+            if (!(mBuffer[i] == other.mBuffer[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    inline bool operator!=(const hidl_array &other) const {
+        return !((*this) == other);
+    }
+
     using size_tuple_type = std::tuple<decltype(SIZE1), decltype(SIZES)...>;
 
     static constexpr size_tuple_type size() {
         return std::make_tuple(SIZE1, SIZES...);
     }
 
+    static constexpr size_t elementCount() {
+        return details::product<SIZE1, SIZES...>::value;
+    }
+
+    operator std_array_type() const {
+        return details::const_accessor<T, SIZE1, SIZES...>(mBuffer);
+    }
+
 private:
-    T mBuffer[details::product<SIZE1, SIZES...>::value];
+    T mBuffer[elementCount()];
 };
 
+// An array of T's. Assumes that T::operator=(const T &) is defined.
 template<typename T, size_t SIZE1>
 struct hidl_array<T, SIZE1> {
+
+    using std_array_type = typename details::std_array<T, SIZE1>::type;
+
     hidl_array() = default;
+
+    // Copies the data from source, using T::operator=(const T &).
     hidl_array(const T *source) {
-        memcpy(mBuffer, source, SIZE1 * sizeof(T));
+        for (size_t i = 0; i < elementCount(); ++i) {
+            mBuffer[i] = source[i];
+        }
     }
+
+    // Copies the data from the given std::array, using T::operator=(const T &).
+    hidl_array(const std_array_type &array) : hidl_array(array.data()) {}
 
     T *data() { return mBuffer; }
     const T *data() const { return mBuffer; }
@@ -551,7 +740,31 @@ struct hidl_array<T, SIZE1> {
         return mBuffer[index];
     }
 
+    // equality check, assuming that T::operator== is defined.
+    bool operator==(const hidl_array &other) const {
+        for (size_t i = 0; i < elementCount(); ++i) {
+            if (!(mBuffer[i] == other.mBuffer[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    inline bool operator!=(const hidl_array &other) const {
+        return !((*this) == other);
+    }
+
     static constexpr size_t size() { return SIZE1; }
+    static constexpr size_t elementCount() { return SIZE1; }
+
+    // Copies the data to an std::array, using T::operator=(T).
+    operator std_array_type() const {
+        std_array_type array;
+        for (size_t i = 0; i < SIZE1; ++i) {
+            array[i] = mBuffer[i];
+        }
+        return array;
+    }
 
 private:
     T mBuffer[SIZE1];
@@ -567,6 +780,23 @@ public:
         return (mMajor == other.get_major() && mMinor == other.get_minor());
     }
 
+    bool operator<(const hidl_version& other) const {
+        return (mMajor < other.get_major() ||
+                (mMajor == other.get_major() && mMinor < other.get_minor()));
+    }
+
+    bool operator>(const hidl_version& other) const {
+        return other < *this;
+    }
+
+    bool operator<=(const hidl_version& other) const {
+        return !(*this > other);
+    }
+
+    bool operator>=(const hidl_version& other) const {
+        return !(*this < other);
+    }
+
     constexpr uint16_t get_major() const { return mMajor; }
     constexpr uint16_t get_minor() const { return mMinor; }
 
@@ -579,19 +809,6 @@ inline android::hardware::hidl_version make_hidl_version(uint16_t major, uint16_
     return hidl_version(major,minor);
 }
 
-struct IBase : virtual public RefBase {
-    virtual bool isRemote() const = 0;
-    // HIDL reserved methods follow.
-    virtual ::android::hardware::Return<void> interfaceChain(
-            std::function<void(const hidl_vec<hidl_string>&)> _hidl_cb) = 0;
-    // This method notifies the interface that one or more system properties have changed.
-    // The default implementation calls report_sysprop_change() in libcutils, which in turn
-    // calls a set of registered callbacks (eg to update trace tags).
-    virtual ::android::hardware::Return<void> notifySyspropsChanged() = 0;
-    // descriptor for HIDL reserved methods.
-    static const char* descriptor;
-};
-
 #if defined(__LP64__)
 #define HAL_LIBRARY_PATH_SYSTEM "/system/lib64/hw/"
 #define HAL_LIBRARY_PATH_VENDOR "/vendor/lib64/hw/"
@@ -601,15 +818,6 @@ struct IBase : virtual public RefBase {
 #define HAL_LIBRARY_PATH_VENDOR "/vendor/lib/hw/"
 #define HAL_LIBRARY_PATH_ODM "/odm/lib/hw/"
 #endif
-
-#define DECLARE_SERVICE_MANAGER_INTERACTIONS(INTERFACE)                                  \
-    static ::android::sp<I##INTERFACE> getService(                                       \
-            const std::string &serviceName, bool getStub=false);                         \
-    ::android::status_t registerAsService(const std::string &serviceName);               \
-    static bool registerForNotifications(                                                \
-        const std::string &serviceName,                                                  \
-        const ::android::sp<::android::hidl::manager::V1_0::IServiceNotification>        \
-                  &notification);                                                        \
 
 // ----------------------------------------------------------------------
 // Class that provides Hidl instrumentation utilities.
@@ -675,4 +883,3 @@ struct HidlInstrumentor {
 
 
 #endif  // ANDROID_HIDL_SUPPORT_H
-

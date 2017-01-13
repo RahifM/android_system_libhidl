@@ -20,8 +20,10 @@
 #include <cstdint>
 #include <sstream>
 
-#include <utils/String8.h>
 #include <android-base/macros.h>
+#include <hidl/HidlInternal.h>
+#include <utils/Errors.h>
+#include <utils/StrongPointer.h>
 
 namespace android {
 namespace hardware {
@@ -83,10 +85,10 @@ public:
     //  Java clients.
     static Status fromExceptionCode(int32_t exceptionCode);
     static Status fromExceptionCode(int32_t exceptionCode,
-                                    const String8& message);
+                                    const char *message);
     static Status fromServiceSpecificError(int32_t serviceSpecificErrorCode);
     static Status fromServiceSpecificError(int32_t serviceSpecificErrorCode,
-                                           const String8& message);
+                                           const char *message);
     static Status fromStatusT(status_t status);
 
     Status() = default;
@@ -98,9 +100,9 @@ public:
     Status& operator=(const Status& status) = default;
 
     // Set one of the pre-defined exception types defined above.
-    void setException(int32_t ex, const String8& message);
+    void setException(int32_t ex, const char *message);
     // Set a service specific exception with error code.
-    void setServiceSpecificError(int32_t errorCode, const String8& message);
+    void setServiceSpecificError(int32_t errorCode, const char *message);
     // Setting a |status| != OK causes generated code to return |status|
     // from Binder transactions, rather than writing an exception into the
     // reply Parcel.  This is the least preferable way of reporting errors.
@@ -108,7 +110,7 @@ public:
 
     // Get information about an exception.
     int32_t exceptionCode() const  { return mException; }
-    const String8& exceptionMessage() const { return mMessage; }
+    const char *exceptionMessage() const { return mMessage.c_str(); }
     status_t transactionError() const {
         return mException == EX_TRANSACTION_FAILED ? mErrorCode : OK;
     }
@@ -118,12 +120,12 @@ public:
 
     bool isOk() const { return mException == EX_NONE; }
 
-    // For logging.
-    String8 toString8() const;
+    // For debugging purposes only
+    std::string description() const;
 
 private:
     Status(int32_t exceptionCode, int32_t errorCode);
-    Status(int32_t exceptionCode, int32_t errorCode, const String8& message);
+    Status(int32_t exceptionCode, int32_t errorCode, const char *message);
 
     // If |mException| == EX_TRANSACTION_FAILED, generated code will return
     // |mErrorCode| as the result of the transaction rather than write an
@@ -134,34 +136,97 @@ private:
     // If |mException| == EX_SERVICE_SPECIFIC we write |mErrorCode| as well.
     int32_t mException = EX_NONE;
     int32_t mErrorCode = 0;
-    String8 mMessage;
+    std::string mMessage;
 };  // class Status
 
 // For gtest output logging
-std::stringstream& operator<< (std::stringstream& stream, const Status& s);
+std::ostream& operator<< (std::ostream& stream, const Status& s);
 
-template<typename T> class Return {
+namespace details {
+    class return_status : public details::hidl_log_base {
+    private:
+        Status mStatus {};
+        mutable bool mCheckedStatus = false;
+    protected:
+        void checkStatus() const {
+            if (!isOk()) {
+                logAlwaysFatal("Attempted to retrieve value from hidl service, "
+                               "but there was a transport error.");
+            }
+        }
+    public:
+        return_status() {}
+        return_status(Status s) : mStatus(s) {}
+
+        return_status(const return_status &) = default;
+
+        ~return_status() {
+            // mCheckedStatus must be checked before isOk since isOk modifies mCheckedStatus
+            if (!mCheckedStatus && !isOk()) {
+                logAlwaysFatal("HIDL return status not checked and transport error occured.");
+            }
+        }
+
+        bool isOk() const {
+            mCheckedStatus = true;
+            return mStatus.isOk();
+        }
+
+        // For debugging purposes only
+        std::string description() const {
+            // Doesn't consider checked.
+            return mStatus.description();
+        }
+    };
+}  // namespace details
+
+template<typename T> class Return : public details::return_status {
 private:
-      T val {};
-      Status status {};
+    T mVal {};
 public:
-      Return(T v) : val{v} {}
-      Return(Status s) : status(s) {}
-      operator T() const { return val; }
-      const Status& getStatus() const {
-          return status;
-      }
+    Return(T v) : details::return_status(), mVal{v} {}
+    Return(Status s) : details::return_status(s) {}
+
+    Return(const Return &) = default;
+
+    ~Return() = default;
+
+    operator T() const {
+        checkStatus();
+        return mVal;
+    }
+
 };
 
-template<> class Return<void> {
+template<typename T> class Return<sp<T>> : public details::return_status {
 private:
-      Status status {};
+    sp<T> mVal {};
 public:
-      Return() = default;
-      Return(Status s) : status(s) {}
-      const Status& getStatus() const {
-          return status;
-      }
+    Return(sp<T> v) : details::return_status(), mVal{v} {}
+    Return(T* v) : details::return_status(), mVal{v} {}
+    // Constructors matching a different type (that is related by inheritance)
+    template<typename U> Return(sp<U> v) : details::return_status(), mVal{v} {}
+    template<typename U> Return(U* v) : details::return_status(), mVal{v} {}
+    Return(Status s) : details::return_status(s) {}
+
+    Return(const Return &) = default;
+    ~Return() = default;
+
+    operator sp<T>() const {
+        checkStatus();
+        return mVal;
+    }
+};
+
+
+template<> class Return<void> : public details::return_status {
+public:
+    Return() : details::return_status() {}
+    Return(Status s) : details::return_status(s) {}
+
+    Return(const Return &) = default;
+
+    ~Return() = default;
 };
 
 static inline Return<void> Void() {

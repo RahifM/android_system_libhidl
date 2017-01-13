@@ -14,22 +14,16 @@
  * limitations under the License.
  */
 
-// All static variables go here, to control initialization and
-// destruction order in the library.
+package android.hidl.memory@1.0;
 
-#include <hidl/Static.h>
+import IMemory;
 
-namespace android {
-namespace hardware {
+interface IMapper {
 
-Mutex gDefaultServiceManagerLock;
-sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
-
-std::map<std::string, std::function<sp<IBinder>(void *)>>
-        gBnConstructorMap{};
-
-std::map<std::string, std::function<sp<::android::hidl::base::V1_0::IBase>(void *)>>
-        gBsConstructorMap;
-
-}   // namespace hardware
-}   // namespace android
+    /**
+     * @param mem Reference to shared memory.
+     * @return mappedMemory Object representing memory mapped in this process.
+     *                      This will be null if mapping fails.
+     */
+    mapMemory(memory mem) generates (IMemory mappedMemory);
+};

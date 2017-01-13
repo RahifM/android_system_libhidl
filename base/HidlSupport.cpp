@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #define LOG_TAG "HidlSupport"
 
 #include <hidl/HidlSupport.h>
 
 #include <android-base/logging.h>
+
 #ifdef LIBHIDL_TARGET_DEBUGGABLE
 #include <cutils/properties.h>
 #include <regex>
@@ -27,14 +27,6 @@
 
 namespace android {
 namespace hardware {
-
-namespace details {
-
-void hidl_log_base::logAlwaysFatal(const char *message) {
-    LOG(FATAL) << message;
-}
-
-} // namespace details
 
 static const char *const kEmptyString = "";
 
@@ -159,14 +151,14 @@ bool hidl_string::empty() const {
     return mSize == 0;
 }
 
-const char* IBase::descriptor = "android.hardware.base@0.0::IBase";
-
 // ----------------------------------------------------------------------
 // HidlInstrumentor implementation.
 HidlInstrumentor::HidlInstrumentor(const std::string &prefix) {
     mEnableInstrumentation = property_get_bool("hal.instrumentation.enable",
                                                false);
-    registerInstrumentationCallbacks(prefix, &mInstrumentationCallbacks);
+    if (mEnableInstrumentation) {
+        registerInstrumentationCallbacks(prefix, &mInstrumentationCallbacks);
+    }
 }
 
 HidlInstrumentor:: ~HidlInstrumentor() {}
