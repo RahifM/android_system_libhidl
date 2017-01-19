@@ -21,6 +21,7 @@
 #include <cutils/native_handle.h>
 #include <hidl/HidlSupport.h>
 #include <utils/NativeHandle.h>
+#include <utils/Log.h>
 
 namespace android {
 namespace hardware {
@@ -28,11 +29,18 @@ namespace hardware {
 typedef uint64_t RingBufferPosition;
 
 struct GrantorDescriptor {
-    uint32_t flags;
-    uint32_t fdIndex;
-    uint32_t offset;
-    size_t extent;
+    uint32_t flags __attribute__ ((aligned(4)));
+    uint32_t fdIndex __attribute__ ((aligned(4)));
+    uint32_t offset __attribute__ ((aligned(4)));
+    uint64_t extent __attribute__ ((aligned(8)));
 };
+
+static_assert(offsetof(GrantorDescriptor, flags) == 0, "wrong offset");
+static_assert(offsetof(GrantorDescriptor, fdIndex) == 4, "wrong offset");
+static_assert(offsetof(GrantorDescriptor, offset) == 8, "wrong offset");
+static_assert(offsetof(GrantorDescriptor, extent) == 16, "wrong offset");
+static_assert(sizeof(GrantorDescriptor) == 24, "wrong size");
+static_assert(__alignof(GrantorDescriptor) == 8, "wrong alignment");
 
 enum MQFlavor : uint32_t {
   /*
@@ -107,6 +115,18 @@ struct MQDescriptor {
      * needed for blocking FMQ operations.
      */
     static constexpr int32_t kMinGrantorCountForEvFlagSupport = EVFLAGWORDPOS + 1;
+
+    //TODO(b/34160777) Identify a better solution that supports remoting.
+    static inline size_t alignToWordBoundary(size_t length) {
+        constexpr size_t kAlignmentSize = 64;
+        LOG_ALWAYS_FATAL_IF(kAlignmentSize % __WORDSIZE != 0, "Incompatible word size");
+        return (length + kAlignmentSize/8 - 1) & ~(kAlignmentSize/8 - 1U);
+    }
+
+    static inline size_t isAlignedToWordBoundary(size_t offset) {
+        constexpr size_t kAlignmentSize = 64;
+        return (offset & (kAlignmentSize/8 - 1)) == 0;
+    }
 private:
     ::android::hardware::hidl_vec<GrantorDescriptor> mGrantors;
     ::android::hardware::details::hidl_pointer<native_handle_t> mHandle;
@@ -144,6 +164,8 @@ MQDescriptor<T, flavor>::MQDescriptor(
       mFlags(flavor) {
     mGrantors.resize(grantors.size());
     for (size_t i = 0; i < grantors.size(); ++i) {
+        LOG_ALWAYS_FATAL_IF(isAlignedToWordBoundary(grantors[i].offset) == false,
+                            "Grantor offsets need to be aligned");
         mGrantors[i] = grantors[i];
     }
 }
@@ -176,7 +198,7 @@ MQDescriptor<T, flavor>::MQDescriptor(size_t bufferSize, native_handle_t *nHandl
         mGrantors[grantorPos] = {
             0 /* grantor flags */,
             0 /* fdIndex */,
-            static_cast<uint32_t>(offset),
+            static_cast<uint32_t>(alignToWordBoundary(offset)),
             memSize[grantorPos]
         };
     }
@@ -244,6 +266,26 @@ const sp<NativeHandle> MQDescriptor<T, flavor>::getNativeHandle() const {
    */
   return NativeHandle::create(mHandle, false /* ownsHandle */);
 }
+
+namespace details {
+template<typename T, MQFlavor flavor>
+std::string toString(const MQDescriptor<T, flavor> &q) {
+    std::string os;
+    if (flavor & kSynchronizedReadWrite) {
+        os += "fmq_sync";
+    }
+    if (flavor & kUnsynchronizedWrite) {
+        os += "fmq_unsync";
+    }
+    os += " {"
+       + toString(q.getGrantors().size()) + " grantor(s), "
+       + "size = " + toString(q.getSize())
+       + ", .handle = " + toString(q.getNativeHandle().get())
+       + ", .quantum = " + toString(q.getQuantum()) + "}";
+    return os;
+}
+}  // namespace details
+
 }  // namespace hardware
 }  // namespace android
 

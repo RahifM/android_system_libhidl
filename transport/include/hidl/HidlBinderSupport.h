@@ -26,7 +26,7 @@
 #include <hwbinder/IPCThreadState.h>
 #include <hwbinder/Parcel.h>
 #include <hwbinder/ProcessState.h>
-#include <android/hidl/base/1.0/BnBase.h>
+#include <android/hidl/base/1.0/BnHwBase.h>
 // Defines functions for hidl_string, hidl_version, Status, hidl_vec, MQDescriptor,
 // etc. to interact with Parcel.
 
@@ -95,12 +95,12 @@ status_t readEmbeddedFromParcel(
         size_t parentHandle,
         size_t parentOffset,
         size_t *handle) {
-    const void *ptr = parcel.readEmbeddedBuffer(
+    const void *out;
+    return parcel.readNullableEmbeddedBuffer(
             handle,
             parentHandle,
-            parentOffset + hidl_vec<T>::kOffsetOfBuffer);
-
-    return ptr != NULL ? OK : UNKNOWN_ERROR;
+            parentOffset + hidl_vec<T>::kOffsetOfBuffer,
+            &out);
 }
 
 template<typename T>
@@ -144,14 +144,13 @@ template<typename T, MQFlavor flavor>
 
     if (_hidl_err != ::android::OK) { return _hidl_err; }
 
-    const native_handle_t *_hidl_mq_handle_ptr = parcel.readEmbeddedNativeHandle(
+    const native_handle_t *_hidl_mq_handle_ptr;
+   _hidl_err = parcel.readEmbeddedNativeHandle(
             parentHandle,
-            parentOffset + MQDescriptor<T, flavor>::kOffsetOfHandle);
+            parentOffset + MQDescriptor<T, flavor>::kOffsetOfHandle,
+            &_hidl_mq_handle_ptr);
 
-    if (_hidl_mq_handle_ptr == nullptr) {
-        _hidl_err = ::android::UNKNOWN_ERROR;
-        return _hidl_err;
-    }
+    if (_hidl_err != ::android::OK) { return _hidl_err; }
 
     return _hidl_err;
 }
@@ -338,7 +337,7 @@ sp<IBinder> toBinder(sp<IType> iface) {
 template <typename IType, typename ProxyType, typename StubType>
 sp<IType> fromBinder(const sp<IBinder>& binderIface) {
     using ::android::hidl::base::V1_0::IBase;
-    using ::android::hidl::base::V1_0::BnBase;
+    using ::android::hidl::base::V1_0::BnHwBase;
 
     if (binderIface.get() == nullptr) {
         return nullptr;
@@ -346,7 +345,7 @@ sp<IType> fromBinder(const sp<IBinder>& binderIface) {
     if (binderIface->localBinder() == nullptr) {
         return new ProxyType(binderIface);
     }
-    sp<IBase> base = static_cast<BnBase*>(binderIface.get())->getImpl();
+    sp<IBase> base = static_cast<BnHwBase*>(binderIface.get())->getImpl();
     if (canCastInterface(base.get(), IType::descriptor)) {
         StubType* stub = static_cast<StubType*>(binderIface.get());
         return stub->getImpl();
