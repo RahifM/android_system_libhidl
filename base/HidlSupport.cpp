@@ -18,15 +18,134 @@
 #include <hidl/HidlSupport.h>
 
 #include <android-base/logging.h>
+#include <vintf/VendorManifest.h>
+#include <vintf/parse_string.h>
 
 #ifdef LIBHIDL_TARGET_DEBUGGABLE
 #include <cutils/properties.h>
+#include <dlfcn.h>
 #include <regex>
 #include <utility>
 #endif
 
 namespace android {
 namespace hardware {
+
+vintf::Transport getTransportFromManifest(const std::string &package) {
+    const vintf::VendorManifest *vm = vintf::VendorManifest::Get();
+    if (vm == nullptr) {
+        LOG(ERROR) << "getTransportFromManifest: Cannot find vendor interface manifest.";
+        return vintf::Transport::EMPTY;
+    }
+    vintf::Transport tr = vm->getTransport(package);
+    if (tr == vintf::Transport::EMPTY) {
+        LOG(WARNING) << "getTransportFromManifest: Cannot find entry "
+                     << package << " in vendor interface manifest.";
+    } else {
+        LOG(INFO) << "getTransportFromManifest: " << package
+                  << " declares transport method " << to_string(tr);
+  }
+    return tr;
+}
+
+hidl_handle::hidl_handle() {
+    mHandle = nullptr;
+    mOwnsHandle = false;
+}
+
+hidl_handle::~hidl_handle() {
+    freeHandle();
+}
+
+hidl_handle::hidl_handle(const native_handle_t *handle) {
+    mHandle = handle;
+    mOwnsHandle = false;
+}
+
+// copy constructor.
+hidl_handle::hidl_handle(const hidl_handle &other) {
+    mOwnsHandle = false;
+    *this = other;
+}
+
+// move constructor.
+hidl_handle::hidl_handle(hidl_handle &&other) {
+    mOwnsHandle = false;
+    *this = std::move(other);
+}
+
+// assignment operators
+hidl_handle &hidl_handle::operator=(const hidl_handle &other) {
+    if (this == &other) {
+        return *this;
+    }
+    freeHandle();
+    if (other.mHandle != nullptr) {
+        mHandle = native_handle_clone(other.mHandle);
+        if (mHandle == nullptr) {
+            LOG(FATAL) << "Failed to clone native_handle in hidl_handle.";
+        }
+        mOwnsHandle = true;
+    } else {
+        mHandle = nullptr;
+        mOwnsHandle = false;
+    }
+    return *this;
+}
+
+hidl_handle &hidl_handle::operator=(const native_handle_t *native_handle) {
+    freeHandle();
+    mHandle = native_handle;
+    mOwnsHandle = false;
+    return *this;
+}
+
+hidl_handle &hidl_handle::operator=(hidl_handle &&other) {
+    if (this != &other) {
+        freeHandle();
+        mHandle = other.mHandle;
+        mOwnsHandle = other.mOwnsHandle;
+        other.mHandle = nullptr;
+        other.mOwnsHandle = false;
+    }
+    return *this;
+}
+
+void hidl_handle::setTo(native_handle_t* handle, bool shouldOwn) {
+    mHandle = handle;
+    mOwnsHandle = shouldOwn;
+}
+
+const native_handle_t* hidl_handle::operator->() const {
+    return mHandle;
+}
+
+// implicit conversion to const native_handle_t*
+hidl_handle::operator const native_handle_t *() const {
+    return mHandle;
+}
+
+// explicit conversion
+const native_handle_t *hidl_handle::getNativeHandle() const {
+    return mHandle;
+}
+
+void hidl_handle::freeHandle() {
+    if (mOwnsHandle && mHandle != nullptr) {
+        // This can only be true if:
+        // 1. Somebody called setTo() with shouldOwn=true, so we know the handle
+        //    wasn't const to begin with.
+        // 2. Copy/assignment from another hidl_handle, in which case we have
+        //    cloned the handle.
+        // 3. Move constructor from another hidl_handle, in which case the original
+        //    hidl_handle must have been non-const as well.
+        native_handle_t *handle = const_cast<native_handle_t*>(
+                static_cast<const native_handle_t*>(mHandle));
+        native_handle_close(handle);
+        native_handle_delete(handle);
+        mHandle = nullptr;
+    }
+}
 
 static const char *const kEmptyString = "";
 
@@ -87,6 +206,10 @@ hidl_string &hidl_string::operator=(const std::string &s) {
     clear();
     copyFrom(s.c_str(), s.size());
     return *this;
+}
+
+bool hidl_string::operator< (const hidl_string &rhs) const {
+    return strcmp(mBuffer, rhs.mBuffer) < 0;
 }
 
 hidl_string::operator std::string() const {
@@ -157,8 +280,10 @@ bool hidl_string::empty() const {
 
 // ----------------------------------------------------------------------
 // HidlInstrumentor implementation.
-HidlInstrumentor::HidlInstrumentor(const std::string &prefix)
-        : mInstrumentationLibPrefix(prefix) {
+HidlInstrumentor::HidlInstrumentor(
+        const std::string &package,
+        const std::string &interface)
+        : mInstrumentationLibPackage(package), mInterfaceName(interface) {
     configureInstrumentation(false);
 }
 
@@ -212,11 +337,15 @@ void HidlInstrumentor::registerInstrumentationCallbacks(
                 continue;
 
             void *handle = dlopen((path + file->d_name).c_str(), RTLD_NOW);
+            char *error;
             if (handle == nullptr) {
                 LOG(WARNING) << "couldn't load file: " << file->d_name
                     << " error: " << dlerror();
                 continue;
             }
+
+            dlerror(); /* Clear any existing error */
+
             using cb_fun = void (*)(
                     const InstrumentationEvent,
                     const char *,
@@ -224,12 +353,12 @@ void HidlInstrumentor::registerInstrumentationCallbacks(
                     const char *,
                     const char *,
                     std::vector<void *> *);
-            auto cb = (cb_fun)dlsym(handle, "HIDL_INSTRUMENTATION_FUNCTION");
-            if (cb == nullptr) {
+            auto cb = (cb_fun)dlsym(handle,
+                    ("HIDL_INSTRUMENTATION_FUNCTION_" + mInterfaceName).c_str());
+            if ((error = dlerror()) != NULL) {
                 LOG(WARNING)
-                    << "couldn't find symbol: HIDL_INSTRUMENTATION_FUNCTION, "
-                       "error: "
-                    << dlerror();
+                    << "couldn't find symbol: HIDL_INSTRUMENTATION_FUNCTION_"
+                    << mInterfaceName << ", error: " << error;
                 continue;
             }
             instrumentationCallbacks->push_back(cb);
@@ -248,7 +377,7 @@ bool HidlInstrumentor::isInstrumentationLib(const dirent *file) {
 #ifdef LIBHIDL_TARGET_DEBUGGABLE
     if (file->d_type != DT_REG) return false;
     std::cmatch cm;
-    std::regex e("^" + mInstrumentationLibPrefix + "(.*).profiler.so$");
+    std::regex e("^" + mInstrumentationLibPackage + "(.*).profiler.so$");
     if (std::regex_match(file->d_name, cm, e)) return true;
 #endif
     return false;

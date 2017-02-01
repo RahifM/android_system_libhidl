@@ -29,6 +29,7 @@ cc_library_shared {
         "libhidlbase",
         "libhwbinder",
         "libcutils",
+        "libhidl-gen-utils"
     ],
     export_shared_lib_headers: [
         "libbase",
@@ -54,6 +55,7 @@ cc_library_shared {
     srcs: [
         "HidlBinderSupport.cpp",
         "HidlPassthroughSupport.cpp",
+        "LegacySupport.cpp",
         "ServiceManagement.cpp",
         "Static.cpp"
     ],

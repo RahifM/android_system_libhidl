@@ -26,12 +26,25 @@
 namespace android {
 namespace hardware {
 
+namespace details {
+bool blockingHalBinderizationEnabled();
+void blockIfBinderizationDisabled(const std::string& interface,
+                                  const std::string& instance);
+} // namespace details
+
 /**
  * Registers passthrough service implementation.
  */
 template<class Interface>
 status_t registerPassthroughServiceImplementation(
-      std::string name = "default") {
+        std::string name = "default") {
+    // TODO(b/34274385)
+    // If binderization is enabled, we should start up. Otherwise, wait around.
+    // If we return/kill ourselves, we will just be restarted by init. This
+    // function is only called from thin wrapping services, so blocking won't
+    // stop anything important from happening.
+    details::blockIfBinderizationDisabled(Interface::descriptor, name);
+
     sp<Interface> service = Interface::getService(name, true /* getStub */);
 
     if (service == nullptr) {
@@ -61,7 +74,12 @@ template<class Interface>
 int defaultPassthroughServiceImplementation(std::string name = "default",
                                             size_t maxThreads = 1) {
     configureRpcThreadpool(maxThreads, true);
-    registerPassthroughServiceImplementation<Interface>(name);
+    status_t result = registerPassthroughServiceImplementation<Interface>(name);
+
+    if (result != OK) {
+        return result;
+    }
+
     joinRpcThreadpool();
     return 0;
 }
