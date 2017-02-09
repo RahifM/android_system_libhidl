@@ -14,22 +14,13 @@
  * limitations under the License.
  */
 
-// All static variables go here, to control initialization and
-// destruction order in the library.
+package android.hidl.base@1.0;
 
-#include <hidl/Static.h>
-
-namespace android {
-namespace hardware {
-
-Mutex gDefaultServiceManagerLock;
-sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
-
-ConcurrentMap<std::string, std::function<sp<IBinder>(void *)>>
-        gBnConstructorMap{};
-
-ConcurrentMap<std::string, std::function<sp<::android::hidl::base::V1_0::IBase>(void *)>>
-        gBsConstructorMap;
-
-}   // namespace hardware
-}   // namespace android
+/*
+ * The returned object for getDebugInfo.
+ * pid: pid of current process. -1 if not available.
+ */
+struct DebugInfo {
+    int32_t pid;
+    uint64_t ptr;
+};

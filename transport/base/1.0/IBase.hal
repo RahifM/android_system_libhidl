@@ -93,4 +93,9 @@ interface IBase {
      */
     oneway setHALInstrumentation();
 
+    /*
+     * Get debug information on references on this interface.
+     * @return info debugging information. See comments of DebugInfo.
+     */
+    getDebugInfo() generates (DebugInfo info);
 };
