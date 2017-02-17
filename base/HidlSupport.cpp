@@ -61,15 +61,13 @@ vintf::Transport getTransportForHals(const FQName &fqName) {
         LOG(WARNING) << "getTransportFromManifest: Cannot find vendor interface manifest.";
         return vintf::Transport::EMPTY;
     }
-    size_t majorVer;
-    size_t minorVer;
-    if (   !::android::base::ParseUint(fqName.getPackageMajorVersion(), &majorVer)
-        || !::android::base::ParseUint(fqName.getPackageMinorVersion(), &minorVer)) {
+    if (!fqName.hasVersion()) {
         LOG(ERROR) << "getTransportFromManifest: " << fqName.string()
                    << " does not specify a version.";
         return vintf::Transport::EMPTY;
     }
-    vintf::Transport tr = vm->getTransport(package, vintf::Version{majorVer, minorVer});
+    vintf::Transport tr = vm->getTransport(package,
+            vintf::Version{fqName.getPackageMajorVersion(), fqName.getPackageMinorVersion()});
     if (tr == vintf::Transport::EMPTY) {
         LOG(WARNING) << "getTransportFromManifest: Cannot find entry "
                      << package << fqName.atVersion() << " in vendor interface manifest.";
@@ -252,10 +250,6 @@ hidl_string &hidl_string::operator=(const std::string &s) {
     return *this;
 }
 
-bool hidl_string::operator< (const hidl_string &rhs) const {
-    return strcmp(mBuffer, rhs.mBuffer) < 0;
-}
-
 hidl_string::operator std::string() const {
     return std::string(mBuffer, mSize);
 }
@@ -397,8 +391,10 @@ void HidlInstrumentor::registerInstrumentationCallbacks(
                     const char *,
                     const char *,
                     std::vector<void *> *);
-            auto cb = (cb_fun)dlsym(handle,
-                    ("HIDL_INSTRUMENTATION_FUNCTION_" + mInterfaceName).c_str());
+            FQName package_name = FQName(mInstrumentationLibPackage);
+            auto cb = (cb_fun)dlsym(handle, ("HIDL_INSTRUMENTATION_FUNCTION_"
+                        + package_name.tokenName() + "_"
+                        + mInterfaceName).c_str());
             if ((error = dlerror()) != NULL) {
                 LOG(WARNING)
                     << "couldn't find symbol: HIDL_INSTRUMENTATION_FUNCTION_"
