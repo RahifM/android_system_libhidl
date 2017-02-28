@@ -12,33 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-cc_library_shared {
-    name: "libhidlmemory",
+cc_binary {
+    name: "android.hidl.allocator@1.0-service",
+    relative_install_path: "hw",
     cflags: libhidl_flags,
+    srcs: [
+        "AshmemAllocator.cpp",
+        "service.cpp"
+    ],
+    init_rc: ["android.hidl.allocator@1.0-service.rc"],
+
     shared_libs: [
+        "android.hidl.base@1.0",
+        "android.hidl.allocator@1.0",
+        "libhidlbase",
+        "libhidltransport",
+        "libhwbinder",
         "libbase",
         "liblog",
         "libutils",
         "libcutils",
-        "libhidlbase",
-        "libhidltransport",
-        "android.hidl.memory@1.0"
     ],
-    local_include_dirs: ["include"],
-    export_include_dirs: ["include"],
-
-    export_shared_lib_headers: [
-        "android.hidl.memory@1.0",
-        "libhidlbase"
-    ],
-
-    srcs: [
-        "mapping.cpp"
-    ],
-
-    product_variables: {
-        debuggable: {
-            cflags: ["-DLIBHIDL_TARGET_DEBUGGABLE"],
-        },
-    },
 }
