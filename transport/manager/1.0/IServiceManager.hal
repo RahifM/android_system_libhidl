@@ -17,6 +17,7 @@
 package android.hidl.manager@1.0;
 
 import IServiceNotification;
+import android.hidl.base@1.0::DebugInfo.Architecture;
 
 /**
  * Manages all the hidl hals on a device.
@@ -51,23 +52,26 @@ interface IServiceManager {
     get(string fqName, string name) generates (interface service);
 
     /**
-     * Register a service. The service manager must be registered as all of the
-     * services that it inherits from.
+     * Register a service. The service manager must retrieve the (inherited)
+     * interfaces that this service implements, and register them along with
+     * the service.
+     *
+     * Each interface must have its own namespace for instance names. If you
+     * have two unrelated interfaces IFoo and IBar, it must be valid to call:
+     *
+     * add("my_instance", foo); // foo implements IFoo
+     * add("my_instance", bar); // bar implements IBar
      *
      * WARNING: This function is for libhidl/HwBinder use only. You are likely
      * looking for 'INTERFACE::registerAsService("name")' instead.
      *
-     * @param interfaceChain List of fully-qualified interface names. The first
-     *                       must be the actual interface name. Subsequent names must
-     *                       follow the inheritance hierarchy of the interface.
      * @param name           Instance name. Must also be used to retrieve service.
      * @param service        Handle to registering service.
      *
      * @return success       Whether or not the service was registered.
      *
      */
-    add(vec<string> interfaceChain, string name, interface service)
-        generates (bool success);
+    add(string name, interface service) generates (bool success);
 
     /**
      * List all registered services. Must be sorted.
@@ -108,20 +112,24 @@ interface IServiceManager {
                              IServiceNotification callback)
         generates (bool success);
 
+    /**
+     * Returned object for debugDump().
+     */
     struct InstanceDebugInfo {
         string interfaceName;
         string instanceName;
         vec<int32_t> clientPids;
+        Architecture arch;
     };
 
-    /*
+    /**
      * Similar to list, but contains more information for each instance.
      * @return info a vector where each item contains debug information for each
      *         instance.
      */
     debugDump() generates (vec<InstanceDebugInfo> info);
 
-    /*
+    /**
      * When the passthrough service manager returns a service via
      * get(string, string), it must dispatch a registerPassthroughClient call
      * to the binderized service manager to indicate which process has called

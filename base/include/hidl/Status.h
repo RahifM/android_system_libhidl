@@ -62,7 +62,6 @@ public:
         EX_ILLEGAL_STATE = -5,
         EX_NETWORK_MAIN_THREAD = -6,
         EX_UNSUPPORTED_OPERATION = -7,
-        EX_SERVICE_SPECIFIC = -8,
 
         // This is special and Java specific; see Parcel.java.
         EX_HAS_REPLY_HEADER = -128,
@@ -75,19 +74,14 @@ public:
     static Status ok();
     // Authors should explicitly pick whether their integer is:
     //  - an exception code (EX_* above)
-    //  - service specific error code
     //  - status_t
     //
-    //  Prefer a generic exception code when possible, then a service specific
-    //  code, and finally a status_t for low level failures or legacy support.
-    //  Exception codes and service specific errors map to nicer exceptions for
-    //  Java clients.
+    // Prefer a generic exception code when possible or a status_t
+    // for low level transport errors. Service specific errors
+    // should be at a higher level in HIDL.
     static Status fromExceptionCode(int32_t exceptionCode);
     static Status fromExceptionCode(int32_t exceptionCode,
                                     const char *message);
-    static Status fromServiceSpecificError(int32_t serviceSpecificErrorCode);
-    static Status fromServiceSpecificError(int32_t serviceSpecificErrorCode,
-                                           const char *message);
     static Status fromStatusT(status_t status);
 
     Status() = default;
@@ -100,8 +94,6 @@ public:
 
     // Set one of the pre-defined exception types defined above.
     void setException(int32_t ex, const char *message);
-    // Set a service specific exception with error code.
-    void setServiceSpecificError(int32_t errorCode, const char *message);
     // Setting a |status| != OK causes generated code to return |status|
     // from Binder transactions, rather than writing an exception into the
     // reply Parcel.  This is the least preferable way of reporting errors.
@@ -112,9 +104,6 @@ public:
     const char *exceptionMessage() const { return mMessage.c_str(); }
     status_t transactionError() const {
         return mException == EX_TRANSACTION_FAILED ? mErrorCode : OK;
-    }
-    int32_t serviceSpecificErrorCode() const {
-        return mException == EX_SERVICE_SPECIFIC ? mErrorCode : 0;
     }
 
     bool isOk() const { return mException == EX_NONE; }
@@ -132,7 +121,6 @@ private:
     //
     // Otherwise, we always write |mException| to the parcel.
     // If |mException| !=  EX_NONE, we write |mMessage| as well.
-    // If |mException| == EX_SERVICE_SPECIFIC we write |mErrorCode| as well.
     int32_t mException = EX_NONE;
     int32_t mErrorCode = 0;
     std::string mMessage;
@@ -147,22 +135,18 @@ namespace details {
         Status mStatus {};
         mutable bool mCheckedStatus = false;
     protected:
-        void checkStatus() const;
+        void assertOk() const;
     public:
         return_status() {}
         return_status(Status s) : mStatus(s) {}
 
-        return_status(const return_status &) = default;
+        return_status(const return_status &) = delete;
+        return_status &operator=(const return_status &) = delete;
 
         return_status(return_status &&other) {
             *this = std::move(other);
         }
-        return_status &operator=(return_status &&other) {
-            checkStatus();
-            std::swap(mStatus, other.mStatus);
-            std::swap(mCheckedStatus, other.mCheckedStatus);
-            return *this;
-        }
+        return_status &operator=(return_status &&other);
 
         ~return_status();
 
@@ -186,8 +170,6 @@ public:
     Return(T v) : details::return_status(), mVal{v} {}
     Return(Status s) : details::return_status(s) {}
 
-    Return(const Return &) = default;
-
     // move-able.
     // precondition: "this" has checked status
     // postcondition: other is safe to destroy after moving to *this.
@@ -197,7 +179,7 @@ public:
     ~Return() = default;
 
     operator T() const {
-        checkStatus();
+        assertOk();
         return mVal;
     }
 
@@ -214,8 +196,6 @@ public:
     template<typename U> Return(U* v) : details::return_status(), mVal{v} {}
     Return(Status s) : details::return_status(s) {}
 
-    Return(const Return &) = default;
-
     // move-able.
     // precondition: "this" has checked status
     // postcondition: other is safe to destroy after moving to *this.
@@ -225,7 +205,7 @@ public:
     ~Return() = default;
 
     operator sp<T>() const {
-        checkStatus();
+        assertOk();
         return mVal;
     }
 };
@@ -235,8 +215,6 @@ template<> class Return<void> : public details::return_status {
 public:
     Return() : details::return_status() {}
     Return(Status s) : details::return_status(s) {}
-
-    Return(const Return &) = default;
 
     // move-able.
     // precondition: "this" has checked status

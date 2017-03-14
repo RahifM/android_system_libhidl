@@ -123,7 +123,7 @@ static void registerReference(const hidl_string &interfaceName, const hidl_strin
 struct PassthroughServiceManager : IServiceManager {
     Return<sp<IBase>> get(const hidl_string& fqName,
                      const hidl_string& name) override {
-        FQName iface(fqName);
+        const FQName iface(fqName);
 
         if (!iface.isValid() ||
             !iface.isFullyQualified() ||
@@ -132,75 +132,68 @@ struct PassthroughServiceManager : IServiceManager {
             return nullptr;
         }
 
+        const std::string prefix = iface.getPackageAndVersion().string() + "-impl";
+        const std::string sym = "HIDL_FETCH_" + iface.name();
+
         const int dlMode = RTLD_LAZY;
         void *handle = nullptr;
-
-        std::string library;
 
         // TODO: lookup in VINTF instead
         // TODO(b/34135607): Remove HAL_LIBRARY_PATH_SYSTEM
 
+        dlerror(); // clear
+
         for (const std::string &path : {
             HAL_LIBRARY_PATH_ODM, HAL_LIBRARY_PATH_VENDOR, HAL_LIBRARY_PATH_SYSTEM
         }) {
-            const std::string prefix = iface.getPackageAndVersion().string() + "-impl";
-
             std::vector<std::string> libs = search(path, prefix, ".so");
 
-            if (libs.size() > 1) {
-                LOG(WARNING) << "Multiple libraries found: " << StringHelper::JoinStrings(libs, ", ");
-            }
-
             for (const std::string &lib : libs) {
-                handle = dlopen((path + lib).c_str(), dlMode);
-                if (handle != nullptr) {
-                    library = lib;
-                    goto beginLookup;
+                const std::string fullPath = path + lib;
+
+                handle = dlopen(fullPath.c_str(), dlMode);
+                if (handle == nullptr) {
+                    const char* error = dlerror();
+                    LOG(ERROR) << "Failed to dlopen " << lib << ": "
+                               << (error == nullptr ? "unknown error" : error);
+                    continue;
                 }
+
+                IBase* (*generator)(const char* name);
+                *(void **)(&generator) = dlsym(handle, sym.c_str());
+                if(!generator) {
+                    const char* error = dlerror();
+                    LOG(ERROR) << "Passthrough lookup opened " << lib
+                               << " but could not find symbol " << sym << ": "
+                               << (error == nullptr ? "unknown error" : error);
+                    dlclose(handle);
+                    continue;
+                }
+
+                IBase *interface = (*generator)(name);
+
+                if (interface == nullptr) {
+                    dlclose(handle);
+                    continue; // this module doesn't provide this instance name
+                }
+
+                registerReference(fqName, name);
+
+                return interface;
             }
         }
 
-        if (handle == nullptr) {
-            return nullptr;
-        }
-beginLookup:
-
-        const std::string sym = "HIDL_FETCH_" + iface.name();
-
-        IBase* (*generator)(const char* name);
-        *(void **)(&generator) = dlsym(handle, sym.c_str());
-        if(!generator) {
-            LOG(ERROR) << "Passthrough lookup opened " << library
-                       << " but could not find symbol " << sym;
-            return nullptr;
-        }
-
-        registerReference(fqName, name);
-
-        return (*generator)(name);
+        return nullptr;
     }
 
-    Return<bool> add(const hidl_vec<hidl_string>& /* interfaceChain */,
-                     const hidl_string& /* name */,
+    Return<bool> add(const hidl_string& /* name */,
                      const sp<IBase>& /* service */) override {
         LOG(FATAL) << "Cannot register services with passthrough service manager.";
         return false;
     }
 
-    Return<void> list(list_cb _hidl_cb) override {
-        std::vector<hidl_string> vec;
-        for (const std::string &path : {
-            HAL_LIBRARY_PATH_ODM, HAL_LIBRARY_PATH_VENDOR, HAL_LIBRARY_PATH_SYSTEM
-        }) {
-            std::vector<std::string> libs = search(path, "", ".so");
-            for (const std::string &lib : libs) {
-                std::string matchedName;
-                if (matchPackageName(lib, &matchedName)) {
-                    vec.push_back(matchedName + "/*");
-                }
-            }
-        }
-        _hidl_cb(vec);
+    Return<void> list(list_cb /* _hidl_cb */) override {
+        LOG(FATAL) << "Cannot list services with passthrough service manager.";
         return Void();
     }
     Return<void> listByInterface(const hidl_string& /* fqInstanceName */,
@@ -218,10 +211,35 @@ beginLookup:
         return false;
     }
 
-    Return<void> debugDump(debugDump_cb) override {
-        // This makes no sense.
-        LOG(FATAL) << "Cannot call debugDump on passthrough service manager."
-                   << "Call it on defaultServiceManager() instead.";
+    Return<void> debugDump(debugDump_cb _hidl_cb) override {
+        using Arch = ::android::hidl::base::V1_0::DebugInfo::Architecture;
+        static std::vector<std::pair<Arch, std::vector<const char *>>> sAllPaths{
+            {Arch::IS_64BIT, {HAL_LIBRARY_PATH_ODM_64BIT,
+                                      HAL_LIBRARY_PATH_VENDOR_64BIT,
+                                      HAL_LIBRARY_PATH_SYSTEM_64BIT}},
+            {Arch::IS_32BIT, {HAL_LIBRARY_PATH_ODM_32BIT,
+                                      HAL_LIBRARY_PATH_VENDOR_32BIT,
+                                      HAL_LIBRARY_PATH_SYSTEM_32BIT}}
+        };
+        std::vector<InstanceDebugInfo> vec;
+        for (const auto &pair : sAllPaths) {
+            Arch arch = pair.first;
+            for (const auto &path : pair.second) {
+                std::vector<std::string> libs = search(path, "", ".so");
+                for (const std::string &lib : libs) {
+                    std::string matchedName;
+                    if (matchPackageName(lib, &matchedName)) {
+                        vec.push_back({
+                            .interfaceName = matchedName,
+                            .instanceName = "*",
+                            .clientPids = {},
+                            .arch = arch
+                        });
+                    }
+                }
+            }
+        }
+        _hidl_cb(vec);
         return Void();
     }
 

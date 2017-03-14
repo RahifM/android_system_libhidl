@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 The Android Open Source Project
+ * Copyright (C) 2017 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,24 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <hidl/HidlTransportSupport.h>
 
-package android.hidl.base@1.0;
+#include <hidl/HidlBinderSupport.h>
 
-/*
- * The returned object for getDebugInfo.
- * pid: pid of current process. -1 if not available.
- * ptr: address of this object
- * arch: 64bit or 32bit
- */
-struct DebugInfo {
+namespace android {
+namespace hardware {
 
-    enum Architecture : int32_t {
-        UNKNOWN = 0,
-        IS_64BIT,
-        IS_32BIT,
-    };
+void configureRpcThreadpool(size_t maxThreads, bool callerWillJoin) {
+    // TODO(b/32756130) this should be transport-dependent
+    configureBinderRpcThreadpool(maxThreads, callerWillJoin);
+}
+void joinRpcThreadpool() {
+    // TODO(b/32756130) this should be transport-dependent
+    joinBinderRpcThreadpool();
+}
 
-    int32_t pid;
-    uint64_t ptr;
-    Architecture arch;
-};
+}
+}

@@ -15,36 +15,37 @@
  */
 #define LOG_TAG "libhidltransport"
 
+#include <inttypes.h>
+
 #include <hidl/LegacySupport.h>
 
 #include <chrono>
-#include <cutils/properties.h>
 #include <thread>
 #include <utils/misc.h>
 #include <utils/Log.h>
+#include <utils/SystemClock.h>
+
+#include <android-base/properties.h>
 
 namespace android {
 namespace hardware {
 
-static const char* kDataProperty = "vold.post_fs_data_done";
-
-void waitForData() {
-    using namespace std::literals::chrono_literals;
-
-    // TODO(b/34274385) remove this
-    while (!property_get_bool(kDataProperty, false)) {
-        std::this_thread::sleep_for(300ms);
-    }
-
-    // TODO(b/35178781) wait a bit longer
-    std::this_thread::sleep_for(300ms);
-}
-
 namespace details {
 
+using android::base::GetBoolProperty;
+using android::base::WaitForPropertyCreation;
+
+static const char* kPersistPropReadyProperty = "ro.persistent_properties.ready";
+static const char* kBinderizationProperty = "persist.hal.binderization";
+
 bool blockingHalBinderizationEnabled() {
-    waitForData();
-    return property_get_bool("persist.hal.binderization", false);
+    if (!GetBoolProperty(kPersistPropReadyProperty, false)) { // not set yet
+        int64_t startTime = elapsedRealtime();
+        WaitForPropertyCreation(kPersistPropReadyProperty, std::chrono::milliseconds::max());
+        ALOGI("Waiting for %s took %" PRId64 " ms", kPersistPropReadyProperty,
+              elapsedRealtime() - startTime);
+    }
+    return GetBoolProperty(kBinderizationProperty, false);
 }
 
 void blockIfBinderizationDisabled(const std::string& interface,
@@ -58,7 +59,7 @@ void blockIfBinderizationDisabled(const std::string& interface,
     std::string package = interface.substr(0, loc);
 
     // only block if this is supposed to be toggled
-    if (getTransport(interface) != vintf::Transport::TOGGLED) {
+    if (getTransport(interface, instance) != vintf::Transport::TOGGLED) {
         return;
     }
 

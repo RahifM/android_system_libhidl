@@ -17,8 +17,10 @@
 #define LOG_TAG "LibHidlTest"
 
 #include <android-base/logging.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <hidl/HidlSupport.h>
+#include <hidl/Status.h>
 #include <hidl/TaskRunner.h>
 #include <vector>
 
@@ -61,6 +63,8 @@ TEST_F(LibHidlTest, StringTest) {
     EXPECT_STREQ(s2.c_str(), "s2");
     hidl_string s2a(nullptr); // copy constructor from null cstr
     EXPECT_STREQ("", s2a);
+    s2a = nullptr; // = from nullptr cstr
+    EXPECT_STREQ(s2a.c_str(), "");
     hidl_string s3 = hidl_string("s3"); // move =
     EXPECT_STREQ(s3.c_str(), "s3");
     hidl_string s4 = hidl_string("12345", 3); // copy constructor from cstr w/ length
@@ -332,6 +336,38 @@ TEST_F(LibHidlTest, HidlVersionTest) {
     EXPECT_TRUE(v3_0 >= v2_2);
 }
 
+TEST_F(LibHidlTest, ReturnMoveTest) {
+    using namespace ::android;
+    using ::android::hardware::Return;
+    using ::android::hardware::Status;
+    Return<void> ret{Status::fromStatusT(DEAD_OBJECT)};
+    ret.isOk();
+    ret = {Status::fromStatusT(DEAD_OBJECT)};
+    ret.isOk();
+}
+
+std::string toString(const ::android::hardware::Status &s) {
+    using ::android::hardware::operator<<;
+    std::ostringstream oss;
+    oss << s;
+    return oss.str();
+}
+
+TEST_F(LibHidlTest, StatusStringTest) {
+    using namespace ::android;
+    using ::android::hardware::Status;
+    using ::testing::HasSubstr;
+
+    EXPECT_EQ(toString(Status::ok()), "No error");
+
+    EXPECT_THAT(toString(Status::fromStatusT(DEAD_OBJECT)), HasSubstr("DEAD_OBJECT"));
+
+    EXPECT_THAT(toString(Status::fromStatusT(-EBUSY)), HasSubstr("busy"));
+
+    EXPECT_THAT(toString(Status::fromExceptionCode(Status::EX_NULL_POINTER)),
+            HasSubstr("EX_NULL_POINTER"));
+
+}
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);

@@ -25,15 +25,13 @@
 #include <fstream>
 #include <sstream>
 
-#ifdef LIBHIDL_TARGET_DEBUGGABLE
-#include <android-base/logging.h>
-#endif
-
 namespace android {
 namespace hardware {
 
 const size_t hidl_memory::kOffsetOfHandle = offsetof(hidl_memory, mHandle);
 const size_t hidl_memory::kOffsetOfName = offsetof(hidl_memory, mName);
+static_assert(hidl_memory::kOffsetOfHandle == 0, "wrong offset");
+static_assert(hidl_memory::kOffsetOfName == 24, "wrong offset");
 
 status_t readEmbeddedFromParcel(hidl_memory * /* memory */,
         const Parcel &parcel, size_t parentHandle, size_t parentOffset) {
@@ -73,6 +71,7 @@ status_t writeEmbeddedToParcel(const hidl_memory &memory,
 }
 // static
 const size_t hidl_string::kOffsetOfBuffer = offsetof(hidl_string, mBuffer);
+static_assert(hidl_string::kOffsetOfBuffer == 0, "wrong offset");
 
 status_t readEmbeddedFromParcel(hidl_string * /* string */,
         const Parcel &parcel, size_t parentHandle, size_t parentOffset) {
@@ -110,7 +109,6 @@ hidl_version* readFromParcel(const android::hardware::Parcel& parcel) {
 
 status_t readFromParcel(Status *s, const Parcel& parcel) {
     int32_t exception;
-    int32_t errorCode;
     status_t status = parcel.readInt32(&exception);
     if (status != OK) {
         s->setFromStatusT(status);
@@ -146,19 +144,7 @@ status_t readFromParcel(Status *s, const Parcel& parcel) {
         return status;
     }
 
-    if (exception == Status::EX_SERVICE_SPECIFIC) {
-        status = parcel.readInt32(&errorCode);
-    }
-    if (status != OK) {
-        s->setFromStatusT(status);
-        return status;
-    }
-
-    if (exception == Status::EX_SERVICE_SPECIFIC) {
-        s->setServiceSpecificError(errorCode, String8(message));
-    } else {
-        s->setException(exception, String8(message));
-    }
+    s->setException(exception, String8(message));
 
     return status;
 }
@@ -177,11 +163,6 @@ status_t writeToParcel(const Status &s, Parcel* parcel) {
         return status;
     }
     status = parcel->writeString16(String16(s.exceptionMessage()));
-    if (s.exceptionCode() != Status::EX_SERVICE_SPECIFIC) {
-        // We have no more information to write.
-        return status;
-    }
-    status = parcel->writeInt32(s.serviceSpecificErrorCode());
     return status;
 }
 

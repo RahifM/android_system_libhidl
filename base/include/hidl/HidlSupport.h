@@ -57,9 +57,16 @@ namespace V1_0 {
 namespace hardware {
 
 // Get transport method from vendor interface manifest.
-// name has the format "android.hardware.foo@1.0::IFoo"
+// interfaceName has the format "android.hardware.foo@1.0::IFoo"
+// instanceName is "default", "ashmem", etc.
 // If it starts with "android.hidl.", a static map is looked up instead.
-vintf::Transport getTransport(const std::string &name);
+vintf::Transport getTransport(const std::string &interfaceName,
+                              const std::string &instanceName);
+
+namespace details {
+// Return true on userdebug / eng builds and false on user builds.
+bool debuggable();
+} //  namespace details
 
 // hidl_death_recipient is a callback interfaced that can be used with
 // linkToDeath() / unlinkToDeath()
@@ -234,7 +241,23 @@ struct hidl_memory {
         return *this;
     }
 
-    // TODO move constructor/move assignment
+    // move constructor
+    hidl_memory(hidl_memory&& other) {
+        *this = std::move(other);
+    }
+
+    // move assignment
+    hidl_memory &operator=(hidl_memory &&other) {
+        if (this != &other) {
+            mHandle = std::move(other.mHandle);
+            mSize = other.mSize;
+            mName = std::move(other.mName);
+            other.mSize = 0;
+        }
+
+        return *this;
+    }
+
 
     ~hidl_memory() {
     }
@@ -247,7 +270,7 @@ struct hidl_memory {
         return mName;
     }
 
-    size_t size() const {
+    uint64_t size() const {
         return mSize;
     }
 
@@ -257,9 +280,9 @@ struct hidl_memory {
     static const size_t kOffsetOfName;
 
 private:
-    hidl_handle mHandle;
-    size_t mSize;
-    hidl_string mName;
+    hidl_handle mHandle __attribute__ ((aligned(8)));
+    uint64_t mSize __attribute__ ((aligned(8)));
+    hidl_string mName __attribute__ ((aligned(8)));
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -270,6 +293,7 @@ struct hidl_vec : private details::hidl_log_base {
         : mBuffer(NULL),
           mSize(0),
           mOwnsBuffer(true) {
+        static_assert(hidl_vec<T>::kOffsetOfBuffer == 0, "wrong offset");
     }
 
     hidl_vec(const hidl_vec<T> &other) : hidl_vec() {
