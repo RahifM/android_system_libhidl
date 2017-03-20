@@ -26,7 +26,6 @@
 
 #include <hidl/HidlBinderSupport.h>
 #include <hidl/ServiceManagement.h>
-#include <hidl/Static.h>
 #include <hidl/Status.h>
 
 #include <android-base/logging.h>
@@ -51,25 +50,34 @@ using android::hidl::manager::V1_0::BnHwServiceManager;
 namespace android {
 namespace hardware {
 
+namespace details {
+extern Mutex gDefaultServiceManagerLock;
+extern sp<android::hidl::manager::V1_0::IServiceManager> gDefaultServiceManager;
+}  // namespace details
+
 sp<IServiceManager> defaultServiceManager() {
 
-    if (gDefaultServiceManager != NULL) return gDefaultServiceManager;
-    if (access("/dev/hwbinder", F_OK|R_OK|W_OK) != 0) {
-        // HwBinder not available on this device or not accessible to
-        // this process.
-        return nullptr;
-    }
     {
-        AutoMutex _l(gDefaultServiceManagerLock);
-        while (gDefaultServiceManager == NULL) {
-            gDefaultServiceManager = fromBinder<IServiceManager, BpHwServiceManager, BnHwServiceManager>(
-                ProcessState::self()->getContextObject(NULL));
-            if (gDefaultServiceManager == NULL)
+        AutoMutex _l(details::gDefaultServiceManagerLock);
+        if (details::gDefaultServiceManager != NULL) {
+            return details::gDefaultServiceManager;
+        }
+        if (access("/dev/hwbinder", F_OK|R_OK|W_OK) != 0) {
+            // HwBinder not available on this device or not accessible to
+            // this process.
+            return nullptr;
+        }
+        while (details::gDefaultServiceManager == NULL) {
+            details::gDefaultServiceManager =
+                    fromBinder<IServiceManager, BpHwServiceManager, BnHwServiceManager>(
+                        ProcessState::self()->getContextObject(NULL));
+            if (details::gDefaultServiceManager == NULL) {
                 sleep(1);
+            }
         }
     }
 
-    return gDefaultServiceManager;
+    return details::gDefaultServiceManager;
 }
 
 std::vector<std::string> search(const std::string &path,

@@ -16,11 +16,12 @@
 #include <hidl/HidlPassthroughSupport.h>
 
 #include <hidl/HidlSupport.h>
-#include <hidl/Static.h>
 #include <hidl/HidlTransportUtils.h>
+#include <hidl/Static.h>
 
 namespace android {
 namespace hardware {
+namespace details {
 
 sp<::android::hidl::base::V1_0::IBase> wrapPassthrough(
         sp<::android::hidl::base::V1_0::IBase> iface) {
@@ -28,7 +29,7 @@ sp<::android::hidl::base::V1_0::IBase> wrapPassthrough(
         // doesn't know how to handle it.
         return iface;
     }
-    std::string myDescriptor = details::getDescriptor(iface.get());
+    std::string myDescriptor = getDescriptor(iface.get());
     if (myDescriptor.empty()) {
         // interfaceDescriptor fails
         return nullptr;
@@ -40,6 +41,6 @@ sp<::android::hidl::base::V1_0::IBase> wrapPassthrough(
     return func(reinterpret_cast<void *>(iface.get()));
 }
 
-
+}  // namespace details
 }  // namespace hardware
 }  // namespace android
