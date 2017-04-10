@@ -31,7 +31,6 @@
 #include <utils/Errors.h>
 #include <utils/RefBase.h>
 #include <utils/StrongPointer.h>
-#include <vintf/Transport.h>
 #include <vector>
 
 namespace android {
@@ -55,13 +54,6 @@ namespace V1_0 {
 }; // namespace hidl
 
 namespace hardware {
-
-// Get transport method from vendor interface manifest.
-// interfaceName has the format "android.hardware.foo@1.0::IFoo"
-// instanceName is "default", "ashmem", etc.
-// If it starts with "android.hidl.", a static map is looked up instead.
-vintf::Transport getTransport(const std::string &interfaceName,
-                              const std::string &instanceName);
 
 namespace details {
 // Return true on userdebug / eng builds and false on user builds.
@@ -123,8 +115,8 @@ struct hidl_handle {
 private:
     void freeHandle();
 
-    details::hidl_pointer<const native_handle_t> mHandle;
-    bool mOwnsHandle;
+    details::hidl_pointer<const native_handle_t> mHandle __attribute__ ((aligned(8)));
+    bool mOwnsHandle __attribute ((aligned(8)));
 };
 
 struct hidl_string {
@@ -157,9 +149,6 @@ struct hidl_string {
     hidl_string &operator=(hidl_string &&other);
     // cast to std::string.
     operator std::string() const;
-    // cast to C-style string. Caller is responsible
-    // to maintain this hidl_string alive.
-    operator const char *() const;
 
     void clear();
 
@@ -202,6 +191,10 @@ HIDL_STRING_OPERATOR(>)
 HIDL_STRING_OPERATOR(>=)
 
 #undef HIDL_STRING_OPERATOR
+
+// Send our content to the output stream
+std::ostream& operator<<(std::ostream& os, const hidl_string& str);
+
 
 // hidl_memory is a structure that can be used to transfer
 // pieces of shared memory between processes. The assumption

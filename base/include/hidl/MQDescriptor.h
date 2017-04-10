@@ -21,7 +21,6 @@
 #include <cutils/native_handle.h>
 #include <hidl/HidlInternal.h>
 #include <hidl/HidlSupport.h>
-#include <utils/Log.h>
 
 namespace android {
 namespace hardware {
@@ -120,6 +119,14 @@ struct MQDescriptor {
         if (kAlignmentSize % __WORDSIZE != 0) {
             details::logAlwaysFatal("Incompatible word size");
         }
+
+        /*
+         * Check if alignment to word boundary would cause an overflow.
+         */
+        if (length > SIZE_MAX - kAlignmentSize/8 + 1) {
+            details::logAlwaysFatal("Queue size too large");
+        }
+
         return (length + kAlignmentSize/8 - 1) & ~(kAlignmentSize/8 - 1U);
     }
 
