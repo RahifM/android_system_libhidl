@@ -16,9 +16,12 @@
 
 #define LOG_TAG "ServiceManagement"
 
+#include <android/dlext.h>
 #include <condition_variable>
 #include <dlfcn.h>
 #include <dirent.h>
+#include <fstream>
+#include <pthread.h>
 #include <unistd.h>
 
 #include <mutex>
@@ -40,6 +43,10 @@
 #define RE_COMPONENT    "[a-zA-Z_][a-zA-Z_0-9]*"
 #define RE_PATH         RE_COMPONENT "(?:[.]" RE_COMPONENT ")*"
 static const std::regex gLibraryFileNamePattern("(" RE_PATH "@[0-9]+[.][0-9]+)-impl(.*?).so");
+
+extern "C" {
+    android_namespace_t* android_get_exported_namespace(const char*);
+}
 
 using android::base::WaitForProperty;
 
@@ -66,13 +73,74 @@ void waitForHwServiceManager() {
     }
 }
 
-sp<IServiceManager> defaultServiceManager() {
+bool endsWith(const std::string &in, const std::string &suffix) {
+    return in.size() >= suffix.size() &&
+           in.substr(in.size() - suffix.size()) == suffix;
+}
 
+bool startsWith(const std::string &in, const std::string &prefix) {
+    return in.size() >= prefix.size() &&
+           in.substr(0, prefix.size()) == prefix;
+}
+
+std::string binaryName() {
+    std::ifstream ifs("/proc/self/cmdline");
+    std::string cmdline;
+    if (!ifs.is_open()) {
+        return "";
+    }
+    ifs >> cmdline;
+
+    size_t idx = cmdline.rfind("/");
+    if (idx != std::string::npos) {
+        cmdline = cmdline.substr(idx + 1);
+    }
+
+    return cmdline;
+}
+
+void tryShortenProcessName(const std::string &packageName) {
+    std::string processName = binaryName();
+
+    if (!startsWith(processName, packageName)) {
+        return;
+    }
+
+    // e.x. android.hardware.module.foo@1.0 -> foo@1.0
+    size_t lastDot = packageName.rfind('.');
+    size_t secondDot = packageName.rfind('.', lastDot - 1);
+
+    if (secondDot == std::string::npos) {
+        return;
+    }
+
+    std::string newName = processName.substr(secondDot + 1,
+            16 /* TASK_COMM_LEN */ - 1);
+    ALOGI("Removing namespace from process name %s to %s.",
+            processName.c_str(), newName.c_str());
+
+    int rc = pthread_setname_np(pthread_self(), newName.c_str());
+    ALOGI_IF(rc != 0, "Removing namespace from process name %s failed.",
+            processName.c_str());
+}
+
+namespace details {
+
+void onRegistration(const std::string &packageName,
+                    const std::string& /* interfaceName */,
+                    const std::string& /* instanceName */) {
+    tryShortenProcessName(packageName);
+}
+
+}  // details
+
+sp<IServiceManager> defaultServiceManager() {
     {
         AutoMutex _l(details::gDefaultServiceManagerLock);
         if (details::gDefaultServiceManager != NULL) {
             return details::gDefaultServiceManager;
         }
+
         if (access("/dev/hwbinder", F_OK|R_OK|W_OK) != 0) {
             // HwBinder not available on this device or not accessible to
             // this process.
@@ -93,16 +161,6 @@ sp<IServiceManager> defaultServiceManager() {
     }
 
     return details::gDefaultServiceManager;
-}
-
-bool endsWith(const std::string &in, const std::string &suffix) {
-    return in.size() >= suffix.size() &&
-           in.substr(in.size() - suffix.size()) == suffix;
-}
-
-bool startsWith(const std::string &in, const std::string &prefix) {
-    return in.size() >= prefix.size() &&
-           in.substr(0, prefix.size()) == prefix;
 }
 
 std::vector<std::string> search(const std::string &path,
@@ -174,6 +232,7 @@ struct PassthroughServiceManager : IServiceManager {
         const std::string prefix = packageAndVersion + "-impl";
         const std::string sym = "HIDL_FETCH_" + ifaceName;
 
+        const android_namespace_t* sphal_namespace = android_get_exported_namespace("sphal");
         const int dlMode = RTLD_LAZY;
         void *handle = nullptr;
 
@@ -190,7 +249,29 @@ struct PassthroughServiceManager : IServiceManager {
             for (const std::string &lib : libs) {
                 const std::string fullPath = path + lib;
 
-                handle = dlopen(fullPath.c_str(), dlMode);
+                // If sphal namespace is available, try to load from the
+                // namespace first. If it fails, fall back to the original
+                // dlopen, which loads from the current namespace.
+                if (sphal_namespace != nullptr && path != HAL_LIBRARY_PATH_SYSTEM) {
+                    const android_dlextinfo dlextinfo = {
+                        .flags = ANDROID_DLEXT_USE_NAMESPACE,
+                        // const_cast is dirty but required because
+                        // library_namespace field is non-const.
+                        .library_namespace = const_cast<android_namespace_t*>(sphal_namespace),
+                    };
+                    handle = android_dlopen_ext(fullPath.c_str(), dlMode, &dlextinfo);
+                    if (handle == nullptr) {
+                        const char* error = dlerror();
+                        LOG(WARNING) << "Failed to dlopen " << lib << " from sphal namespace:"
+                                     << (error == nullptr ? "unknown error" : error);
+                    } else {
+                        LOG(DEBUG) << lib << " loaded from sphal namespace.";
+                    }
+                }
+                if (handle == nullptr) {
+                    handle = dlopen(fullPath.c_str(), dlMode);
+                }
+
                 if (handle == nullptr) {
                     const char* error = dlerror();
                     LOG(ERROR) << "Failed to dlopen " << lib << ": "
