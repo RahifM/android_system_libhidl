@@ -25,6 +25,7 @@ subdirs = [
 
 cc_library_shared {
     name: "libhidltransport",
+    vendor_available: true,
     cflags: libhidl_flags,
     shared_libs: [
         "libbase",
@@ -57,7 +58,6 @@ cc_library_shared {
 
     srcs: [
         "HidlBinderSupport.cpp",
-        "HidlPassthroughSupport.cpp",
         "HidlTransportSupport.cpp",
         "ServiceManagement.cpp",
         "Static.cpp"
